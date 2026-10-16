@@ -1,93 +1,86 @@
 // 狀態持久化：只存在使用者瀏覽器的 localStorage，不會上傳到任何地方。
+// 載入的資料一律經過 normalize 白名單驗證，不合法的欄位以預設值取代。
 
 import {
   CONTRACT_CODES,
   DEFAULT_MARGINS,
   DEFAULT_MARGIN_DATE,
-  DEFAULT_TAX_RATE,
   DEFAULT_LIQUIDATION_RATIO,
+  SHOCK_OPTIONS,
+  DEFAULT_SHOCK,
 } from './contracts.js';
-import { byDate } from './risk.js';
+import { isPos, isPosInt, isDate, isValidMargin, isValidRatio, LIMITS } from './validate.js';
 
-const STORAGE_KEY = 'twdashboard.state.v1';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const STORAGE_KEY = `twdashboard.state.v${SCHEMA_VERSION}`;
 
 export function defaultSettings() {
   return {
     margins: structuredClone(DEFAULT_MARGINS),
     marginDate: DEFAULT_MARGIN_DATE,
-    feePerSide: Object.fromEntries(CONTRACT_CODES.map((c) => [c, 0])),
-    taxRate: DEFAULT_TAX_RATE,
     liquidationRatio: DEFAULT_LIQUIDATION_RATIO,
+    colorScheme: 'redUp',
   };
 }
 
 export function defaultState() {
   return {
     version: SCHEMA_VERSION,
-    account: { balance: 0 },
+    calc: { contract: 'TMF', side: 'long', entry: 47100, deposit: 75000, qty: 1, shock: DEFAULT_SHOCK },
+    grid: { contract: 'TMF', side: 'long', start: 47100, spacing: 500, qtyPerLevel: 1, levels: 6, deposit: 150000 },
     settings: defaultSettings(),
-    positions: [],
-    equityHistory: [],
-    trades: [],
   };
 }
 
-const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
-const nonNeg = (v) => isNum(v) && v >= 0;
-const isDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
-// side 會被插進 HTML class，必須白名單驗證
 const isSide = (v) => v === 'long' || v === 'short';
+const isContract = (v) => CONTRACT_CODES.includes(v);
 
-function validPosition(p) {
-  return p && typeof p.id === 'string' && CONTRACT_CODES.includes(p.contract)
-    && isSide(p.side)
-    && Number.isInteger(p.qty) && p.qty > 0
-    && isNum(p.entry) && p.entry > 0 && isNum(p.price) && p.price > 0;
+/** 依規則逐欄挑選合法值，其餘沿用預設 */
+function pick(raw, base, rules) {
+  const out = { ...base };
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [key, valid] of Object.entries(rules)) {
+    if (valid(raw[key])) out[key] = raw[key];
+  }
+  return out;
 }
 
-function validTrade(t) {
-  return t && isDate(t.date) && CONTRACT_CODES.includes(t.contract) && isSide(t.side)
-    && Number.isInteger(t.qty) && t.qty > 0
-    && ['entry', 'exit', 'gross', 'cost', 'net'].every((k) => isNum(t[k]));
-}
-
-/** 同一天保留最後一筆，依日期排序 */
-function dedupeByDate(history) {
-  const map = new Map(history.map((h) => [h.date, { date: h.date, equity: h.equity }]));
-  return [...map.values()].sort(byDate);
-}
-
-/** 把任意輸入整理成合法 state；不合法的欄位以預設值補上，不合法的列直接丟棄 */
+/** 把任意輸入整理成合法 state */
 export function normalize(raw) {
   const base = defaultState();
   if (!raw || typeof raw !== 'object') return base;
 
-  const s = raw.settings ?? {};
-  const settings = base.settings;
+  const calc = pick(raw.calc, base.calc, {
+    contract: isContract,
+    side: isSide,
+    entry: isPos,
+    deposit: isPos,
+    qty: (v) => isPosInt(v, LIMITS.maxQty),
+    shock: (v) => SHOCK_OPTIONS.includes(v),
+  });
+
+  const grid = pick(raw.grid, base.grid, {
+    contract: isContract,
+    side: isSide,
+    start: isPos,
+    spacing: isPos,
+    qtyPerLevel: (v) => isPosInt(v, LIMITS.maxQty),
+    levels: (v) => isPosInt(v, LIMITS.maxLevels),
+    deposit: isPos,
+  });
+
+  const settings = pick(raw.settings, base.settings, {
+    marginDate: isDate,
+    liquidationRatio: isValidRatio,
+    colorScheme: (v) => v === 'redUp' || v === 'greenUp',
+  });
+  settings.margins = structuredClone(DEFAULT_MARGINS);
   for (const code of CONTRACT_CODES) {
-    const m = s.margins?.[code];
-    if (m && isNum(m.initial) && isNum(m.maintenance) && m.maintenance > 0 && m.initial >= m.maintenance) {
-      settings.margins[code] = { initial: m.initial, maintenance: m.maintenance };
-    }
-    if (nonNeg(s.feePerSide?.[code])) settings.feePerSide[code] = s.feePerSide[code];
-  }
-  if (isDate(s.marginDate)) settings.marginDate = s.marginDate;
-  if (nonNeg(s.taxRate)) settings.taxRate = s.taxRate;
-  if (nonNeg(s.liquidationRatio) && s.liquidationRatio < 1) {
-    settings.liquidationRatio = s.liquidationRatio;
+    const m = raw.settings?.margins?.[code];
+    if (isValidMargin(m)) settings.margins[code] = { initial: m.initial, maintenance: m.maintenance };
   }
 
-  return {
-    version: SCHEMA_VERSION,
-    account: { balance: isNum(raw.account?.balance) ? raw.account.balance : 0 },
-    settings,
-    positions: Array.isArray(raw.positions) ? raw.positions.filter(validPosition) : [],
-    equityHistory: Array.isArray(raw.equityHistory)
-      ? dedupeByDate(raw.equityHistory.filter((h) => h && isDate(h.date) && isNum(h.equity)))
-      : [],
-    trades: Array.isArray(raw.trades) ? raw.trades.filter(validTrade) : [],
-  };
+  return { version: SCHEMA_VERSION, calc, grid, settings };
 }
 
 export function load() {
@@ -107,17 +100,4 @@ export function save(state) {
   } catch {
     return false;
   }
-}
-
-export function exportJson(state) {
-  return JSON.stringify(state, null, 2);
-}
-
-/** 解析匯入檔；JSON 格式錯誤時丟出例外 */
-export function importJson(text) {
-  return normalize(JSON.parse(text));
-}
-
-export function newId() {
-  return crypto.randomUUID();
 }

@@ -2,157 +2,296 @@
 <html lang="zh-Hant-TW">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'">
   <title>台指期風控儀表盤</title>
-  <meta name="description" content="臺股期貨（大台、小台、微台）保證金、風險指標、曝險槓桿、壓力測試與回撤試算。資料只存在你的瀏覽器。">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23b42318'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <meta name="description" content="台指期（大台、小台、微台）爆倉價格、追繳價、槓桿與網格加碼試算：先決定要扛多大波動，再反推該存多少保證金。">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1117" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f5b301'/%3E%3Cpath d='M7 22a9 9 0 0 1 18 0' stroke='%23111' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3Cpath d='M16 22l5-6' stroke='%23111' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="css/style.css">
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="wrap topbar-inner">
-      <h1>台指期風控儀表盤</h1>
-      <span id="status-badge" class="badge" role="status"></span>
+      <div class="brand">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 17a8 8 0 0 1 16 0" /><path d="M12 17l4-5" /></svg>
+        </span>
+        <div>
+          <h1>台指期風控儀表盤</h1>
+          <p class="tagline">先決定要扛多大波動，再反推保證金</p>
+        </div>
+      </div>
+      <nav class="tabs" aria-label="功能分頁">
+        <a href="#calc" data-tab="calc">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 16H3z" /><path d="M12 10v4" /><path d="M12 17h.01" /></svg>
+          <span>爆倉價格計算</span>
+        </a>
+        <a href="#grid" data-tab="grid">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10" /><path d="M4 12h13" /><path d="M4 18h16" /></svg>
+          <span>網格倉位階梯</span>
+        </a>
+        <a href="#rules" data-tab="rules">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11l3 3v13H5z" /><path d="M9 11h6" /><path d="M9 15h6" /></svg>
+          <span>風控法規公式</span>
+        </a>
+      </nav>
+      <div class="segmented color-toggle" role="group" aria-label="漲跌配色">
+        <button type="button" data-colors="redUp">紅漲</button>
+        <button type="button" data-colors="greenUp">綠漲</button>
+      </div>
     </div>
   </header>
 
   <main class="wrap">
-    <p id="storage-warning" class="alert" hidden>瀏覽器無法儲存資料（可能是隱私模式），關閉頁面後輸入內容會遺失。請用「匯出 JSON」備份。</p>
+    <p id="storage-warning" class="alert" hidden>瀏覽器無法儲存資料（可能是隱私模式），重新整理後輸入內容會遺失。</p>
 
-    <section aria-labelledby="kpi-title">
-      <h2 id="kpi-title" class="sr-only">風控摘要</h2>
-      <div id="kpis" class="kpis"></div>
-    </section>
+    <!-- ① 爆倉價格計算 -->
+    <section id="page-calc" class="page" data-page="calc" aria-labelledby="calc-title">
+      <h2 id="calc-title" class="sr-only">爆倉價格計算</h2>
+      <div class="layout">
+        <form id="calc-form" class="card inputs" autocomplete="off">
+          <div class="card-head">
+            <h3><span class="dot" aria-hidden="true"></span>開倉數據設定</h3>
+            <span class="chip live">即時試算</span>
+          </div>
 
-    <section class="card" aria-labelledby="account-title">
-      <h2 id="account-title">帳戶與價格</h2>
-      <form id="account-form" class="row-form">
-        <label>帳戶餘額（不含未實現損益）
-          <input name="balance" type="number" step="1" inputmode="numeric" required>
-        </label>
-        <button type="submit">更新餘額</button>
-      </form>
-      <form id="price-form" class="row-form">
-        <label>商品
-          <select name="contract">
-            <option value="ALL">全部部位</option>
-          </select>
-        </label>
-        <label>現價（指數點）
-          <input name="price" type="number" step="1" min="1" inputmode="numeric" required>
-        </label>
-        <button type="submit">套用現價</button>
-      </form>
-    </section>
+          <label class="field">商品
+            <select name="contract" data-contract-select></select>
+          </label>
+          <p class="hint" id="calc-contract-info"></p>
 
-    <section class="card" aria-labelledby="positions-title">
-      <h2 id="positions-title">持倉</h2>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr><th>商品</th><th>方向</th><th class="num">口數</th><th class="num">成本</th><th class="num">現價</th><th class="num">未實現損益</th><th class="num">原始保證金</th><th></th></tr>
-          </thead>
-          <tbody id="positions-body"></tbody>
-        </table>
-      </div>
-      <form id="position-form" class="row-form">
-        <label>商品 <select name="contract"></select></label>
-        <label>方向
-          <select name="side"><option value="long">多</option><option value="short">空</option></select>
-        </label>
-        <label>口數 <input name="qty" type="number" min="1" step="1" required></label>
-        <label>成本 <input name="entry" type="number" min="1" step="1" required></label>
-        <label>現價 <input name="price" type="number" min="1" step="1" placeholder="同成本"></label>
-        <button type="submit">新增部位</button>
-      </form>
-    </section>
+          <div class="segmented side-toggle" role="group" aria-label="方向">
+            <button type="button" data-side="long">做多（看漲）</button>
+            <button type="button" data-side="short">做空（看跌）</button>
+          </div>
 
-    <section class="card" aria-labelledby="stress-title">
-      <h2 id="stress-title">情境壓力測試</h2>
-      <p class="muted">指數同步變動時的權益數與風險指標；保證金依口數計，不隨價格變動。±10% 為漲跌停。</p>
-      <div class="table-scroll">
-        <table>
-          <thead><tr><th>指數變動</th><th class="num">損益</th><th class="num">權益數</th><th class="num">風險指標</th><th>狀態</th></tr></thead>
-          <tbody id="stress-body"></tbody>
-        </table>
-      </div>
-    </section>
+          <div class="field">
+            <div class="field-head">
+              <label for="calc-entry">開倉價格（點）</label>
+              <button type="button" class="link-btn" data-fetch-quote="calc">抓取行情</button>
+            </div>
+            <div class="stepper">
+              <button type="button" data-step="entry" data-delta="-10" aria-label="開倉價格減 10 點">−</button>
+              <input id="calc-entry" name="entry" type="number" inputmode="decimal" min="1" step="1" required>
+              <button type="button" data-step="entry" data-delta="10" aria-label="開倉價格加 10 點">+</button>
+            </div>
+            <p class="hint quote-hint" data-quote-hint></p>
+          </div>
 
-    <section class="card" aria-labelledby="equity-title">
-      <h2 id="equity-title">權益曲線與回撤</h2>
-      <div id="drawdown-stats" class="stats"></div>
-      <div id="equity-chart" class="chart"></div>
-      <form id="equity-form" class="row-form">
-        <label>日期 <input name="date" type="date" required></label>
-        <label>權益數 <input name="equity" type="number" step="1" placeholder="留空＝目前權益數"></label>
-        <button type="submit">記錄權益</button>
-      </form>
-      <details>
-        <summary>權益紀錄明細</summary>
-        <div class="table-scroll">
-          <table>
-            <thead><tr><th>日期</th><th class="num">權益數</th><th></th></tr></thead>
-            <tbody id="equity-body"></tbody>
-          </table>
+          <div class="field">
+            <label for="calc-deposit">存入保證金（元）</label>
+            <input id="calc-deposit" name="deposit" type="number" inputmode="numeric" min="1" step="any" required>
+            <div class="presets" role="group" aria-label="保證金快捷設定">
+              <button type="button" data-deposit-mult="1">1 倍<small>危險</small></button>
+              <button type="button" data-deposit-mult="3">3 倍<small>中等</small></button>
+              <button type="button" data-deposit-mult="5">5 倍<small>低風險</small></button>
+            </div>
+            <p class="hint">「N 倍」＝ N × 原始保證金 × 口數</p>
+          </div>
+
+          <div class="field">
+            <label for="calc-qty">持倉口數</label>
+            <div class="qty-row">
+              <div class="stepper">
+                <button type="button" data-step="qty" data-delta="-1" aria-label="口數減 1">−</button>
+                <input id="calc-qty" name="qty" type="number" inputmode="numeric" min="1" step="1" required>
+                <button type="button" data-step="qty" data-delta="1" aria-label="口數加 1">+</button>
+              </div>
+              <div class="presets compact" role="group" aria-label="口數快捷設定">
+                <button type="button" data-qty="1">1口</button>
+                <button type="button" data-qty="2">2口</button>
+                <button type="button" data-qty="5">5口</button>
+                <button type="button" data-qty="10">10口</button>
+              </div>
+            </div>
+          </div>
+
+          <p class="form-error" data-form-error role="status" aria-live="polite"></p>
+          <button type="button" class="ghost" id="calc-reset">重設</button>
+        </form>
+
+        <div class="results">
+          <p id="calc-open-warning" class="alert danger" hidden></p>
+
+          <section class="card gauge-card" aria-labelledby="gauge-title">
+            <h3 id="gauge-title">槓桿倍數</h3>
+            <div id="gauge" class="gauge-wrap"></div>
+            <p class="gauge-value"><span id="lev-value"></span><small>倍</small></p>
+            <p class="gauge-zone-label" id="lev-zone"></p>
+            <p class="hint center" id="lev-sub"></p>
+            <ul class="legend" id="zone-legend"></ul>
+          </section>
+
+          <section class="card" aria-labelledby="risk-title">
+            <div class="card-head">
+              <h3 id="risk-title">盤中強制平倉（斷頭價）</h3>
+              <span class="pill" id="risk-badge"></span>
+            </div>
+            <p class="big-number" id="liq-price"></p>
+            <div class="two-col">
+              <div>
+                <p class="label">距斷頭空間</p>
+                <p class="value danger-text" id="liq-distance"></p>
+              </div>
+              <div>
+                <p class="label">盤後追繳價（低於維持保證金）</p>
+                <p class="value warn-text" id="mc-price"></p>
+              </div>
+            </div>
+            <div class="meter-row">
+              <span class="label">開倉風險指標 <strong id="risk-ratio"></strong></span>
+              <span class="hint" id="risk-ratio-note"></span>
+            </div>
+            <div class="meter" aria-hidden="true"><div class="meter-fill" id="risk-meter"></div><div class="meter-mark" id="risk-mark"></div></div>
+          </section>
+
+          <section class="card" aria-labelledby="advice-title">
+            <h3 id="advice-title"><span class="dot warn" aria-hidden="true"></span>要扛多大的波動？</h3>
+            <div class="presets" role="group" aria-label="波動幅度" id="shock-options"></div>
+            <p class="advice-buffer" id="advice-buffer"></p>
+            <dl class="rows">
+              <div><dt id="advice-loss-label"></dt><dd id="advice-loss"></dd></div>
+              <div><dt>不被斷頭，至少存入</dt><dd id="advice-liq"></dd></div>
+              <div><dt>不被追繳，至少存入</dt><dd id="advice-mc"></dd></div>
+            </dl>
+            <p class="advice-gap" id="advice-gap"></p>
+          </section>
+
+          <section class="card" aria-labelledby="detail-title">
+            <h3 id="detail-title">契約與部位明細</h3>
+            <dl class="rows">
+              <div><dt>契約總市值</dt><dd id="d-notional"></dd></div>
+              <div><dt>原始保證金門檻</dt><dd id="d-initial"></dd></div>
+              <div><dt>維持保證金門檻</dt><dd id="d-maint"></dd></div>
+              <div><dt>斷頭線（原始保證金 × <span id="d-ratio"></span>）</dt><dd id="d-liq-equity"></dd></div>
+              <div><dt>斷頭前最大可承受虧損</dt><dd class="danger-text" id="d-maxloss"></dd></div>
+              <div><dt>實質槓桿／最大槓桿</dt><dd id="d-lev"></dd></div>
+            </dl>
+          </section>
         </div>
-      </details>
-    </section>
-
-    <section class="card" aria-labelledby="trades-title">
-      <h2 id="trades-title">平倉紀錄</h2>
-      <div class="table-scroll">
-        <table>
-          <thead><tr><th>日期</th><th>商品</th><th>方向</th><th class="num">口數</th><th class="num">成本</th><th class="num">平倉價</th><th class="num">毛損益</th><th class="num">費稅</th><th class="num">淨損益</th></tr></thead>
-          <tbody id="trades-body"></tbody>
-        </table>
       </div>
     </section>
 
-    <section class="card" aria-labelledby="settings-title">
-      <h2 id="settings-title">設定</h2>
-      <form id="settings-form">
-        <div class="table-scroll">
-          <table>
-            <thead><tr><th>商品</th><th class="num">原始保證金</th><th class="num">維持保證金</th><th class="num">手續費／口／邊</th></tr></thead>
-            <tbody id="settings-body"></tbody>
-          </table>
+    <!-- ② 網格倉位階梯 -->
+    <section id="page-grid" class="page" data-page="grid" aria-labelledby="grid-title" hidden>
+      <h2 id="grid-title" class="sr-only">網格倉位階梯</h2>
+      <div class="layout">
+        <form id="grid-form" class="card inputs" autocomplete="off">
+          <div class="card-head">
+            <h3><span class="dot" aria-hidden="true"></span>網格加碼設定</h3>
+            <span class="chip live">即時試算</span>
+          </div>
+          <label class="field">商品
+            <select name="contract" data-contract-select></select>
+          </label>
+          <div class="segmented side-toggle" role="group" aria-label="方向">
+            <button type="button" data-side="long">做多（逢低加碼）</button>
+            <button type="button" data-side="short">做空（逢高加碼）</button>
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label for="grid-start">起始價格（點）</label>
+              <button type="button" class="link-btn" data-fetch-quote="grid">抓取行情</button>
+            </div>
+            <input id="grid-start" name="start" type="number" inputmode="decimal" min="1" step="1" required>
+            <p class="hint quote-hint" data-quote-hint></p>
+          </div>
+          <div class="grid-2">
+            <label class="field">每格間距（點）<input name="spacing" type="number" inputmode="numeric" min="1" step="1" required></label>
+            <label class="field">每格口數<input name="qtyPerLevel" type="number" inputmode="numeric" min="1" step="1" required></label>
+            <label class="field">格數<input name="levels" type="number" inputmode="numeric" min="1" step="1" required></label>
+            <label class="field">存入保證金（元）<input name="deposit" type="number" inputmode="numeric" min="1" step="any" required></label>
+          </div>
+          <p class="form-error" data-form-error role="status" aria-live="polite"></p>
+          <p class="hint">第 1 格在起始價開倉；做多每跌一個間距加碼，做空每漲一個間距加碼。加碼時需權益數 ≥ 加碼後全部口數的原始保證金。</p>
+        </form>
+
+        <div class="results">
+          <section class="card" aria-labelledby="grid-summary-title">
+            <h3 id="grid-summary-title">階梯結論</h3>
+            <p class="grid-summary" id="grid-summary"></p>
+          </section>
+          <section class="card" aria-labelledby="grid-table-title">
+            <h3 id="grid-table-title">逐格明細</h3>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr><th>格</th><th class="num">價位</th><th class="num">累計口數</th><th class="num">均價</th><th class="num">槓桿</th><th class="num">風險指標</th><th class="num">追繳價</th><th class="num">斷頭價</th><th class="num">距斷頭</th></tr>
+                </thead>
+                <tbody id="grid-body"></tbody>
+              </table>
+            </div>
+          </section>
         </div>
-        <div class="row-form">
-          <label>保證金資料日期 <input name="marginDate" type="date" required></label>
-          <label>期交稅率（十萬分之）<input name="taxRate" type="number" min="0" step="0.1" required></label>
-          <label>代沖銷風險指標（%）<input name="liquidationRatio" type="number" min="0" max="99" step="1" required></label>
-          <button type="submit">儲存設定</button>
-          <button type="button" id="reset-settings" class="secondary">還原預設值</button>
+      </div>
+    </section>
+
+    <!-- ③ 風控法規公式 -->
+    <section id="page-rules" class="page" data-page="rules" aria-labelledby="rules-title" hidden>
+      <h2 id="rules-title" class="sr-only">風控法規公式</h2>
+      <div class="layout rules">
+        <div class="results">
+          <section class="card">
+            <h3>為什麼不要看風險指標 <span data-liq-ratio>25%</span></h3>
+            <p>風險指標 <span data-liq-ratio>25%</span> 是期貨商啟動代為沖銷（斷頭）的門檻，是給風控與後台帳務看的「最後防線」，不是交易者該拿來規劃部位的標準。貼著原始保證金開倉，原始到維持保證金之間的空間很薄：<span id="rules-example"></span></p>
+            <p>正確的順序是：<strong>先決定要扛多大的反向波動</strong>（例如 10%，約 4,700 點），再反推需要存多少保證金。</p>
+          </section>
+
+          <section class="card">
+            <h3>公式</h3>
+            <dl class="formulas">
+              <div><dt>權益數</dt><dd>存入保證金 + 方向 × (指數 − 均價) × 乘數 × 口數<br><small>方向：多單 +1、空單 −1；乘數：大台 200、小台 50、微台 10</small></dd></div>
+              <div><dt>風險指標</dt><dd>權益數 ÷ (原始保證金 × 口數)</dd></div>
+              <div><dt>斷頭價</dt><dd>均價 − 方向 × (存入保證金 − 原始保證金 × 口數 × <span data-liq-ratio>25%</span>) ÷ (乘數 × 口數)</dd></div>
+              <div><dt>追繳價</dt><dd>均價 − 方向 × (存入保證金 − 維持保證金 × 口數) ÷ (乘數 × 口數)</dd></div>
+              <div><dt>槓桿倍數</dt><dd>指數 × 乘數 × 口數 ÷ 存入保證金；最大槓桿 ＝ 指數 × 乘數 ÷ 原始保證金</dd></div>
+              <div><dt>要扛 X% 不被斷頭</dt><dd>指數 × X% × 乘數 × 口數 + 原始保證金 × 口數 × <span data-liq-ratio>25%</span></dd></div>
+              <div><dt>要扛 X% 不被追繳</dt><dd>指數 × X% × 乘數 × 口數 + 維持保證金 × 口數</dd></div>
+              <div><dt>距斷頭緩衝</dt><dd>1 ÷ 槓桿 − <span data-liq-ratio>25%</span> ÷ 最大槓桿（儀表分區依此換算）</dd></div>
+            </dl>
+          </section>
+
+          <section class="card">
+            <h3>期交所與期貨商規則</h3>
+            <ul class="rule-list">
+              <li><strong>開倉：</strong>可用保證金需 ≥ 原始保證金才能新增部位。</li>
+              <li><strong>盤後追繳：</strong>每日結算後權益數低於維持保證金，期貨商發出追繳通知，須補足至原始保證金；補繳期限依各期貨商規定。</li>
+              <li><strong>盤中代沖銷：</strong>盤中風險指標低於 <span data-liq-ratio>25%</span>，期貨商得逕行代為沖銷（斷頭），不等你補錢。</li>
+              <li><strong>漲跌幅：</strong>臺股期貨單日漲跌幅限制為前一日結算價 ±10%。</li>
+              <li><strong>保證金調整：</strong>期交所會依市場波動調整保證金，調高時原有部位也適用新標準。</li>
+            </ul>
+            <p class="hint">參考：<a href="https://www.taifex.com.tw/cht/5/indexMarging" target="_blank" rel="noopener">期交所保證金一覽表</a>。實際規定以期交所公告及你的期貨商為準。</p>
+          </section>
         </div>
-      </form>
-      <p class="muted">保證金預設值取自<a href="https://www.taifex.com.tw/cht/5/indexMarging" target="_blank" rel="noopener">臺灣期貨交易所</a>，期交所會不定期調整，請自行核對；你的期貨商可能收取更高的保證金。</p>
-      <div class="row-form">
-        <button type="button" id="export-btn" class="secondary">匯出 JSON</button>
-        <label class="file-btn secondary">匯入 JSON <input id="import-input" type="file" accept="application/json,.json"></label>
-        <button type="button" id="clear-btn" class="danger">清除所有資料</button>
+
+        <form id="settings-form" class="card inputs" autocomplete="off">
+          <h3>保證金設定</h3>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>商品</th><th class="num">原始</th><th class="num">維持</th></tr></thead>
+              <tbody id="settings-body"></tbody>
+            </table>
+          </div>
+          <div class="grid-2">
+            <label class="field">資料日期<input name="marginDate" type="date" required></label>
+            <label class="field">代沖銷門檻（%）<input name="liquidationRatio" type="number" min="1" max="99" step="0.1" required></label>
+          </div>
+          <div class="button-row">
+            <button type="submit">儲存設定</button>
+            <button type="button" class="ghost" id="reset-settings">還原預設值</button>
+          </div>
+          <p class="hint" id="settings-msg" role="status"></p>
+        </form>
       </div>
     </section>
 
     <footer class="disclaimer">
-      <p>本工具僅供試算與教育用途，不構成投資建議。計算方式採保守簡化（不計跨月價差保證金減收），數字可能與期貨商不同，實際以期貨商通知為準。所有資料只存在你的瀏覽器，不會上傳。</p>
+      <p>本工具僅供試算與教育用途，不構成投資建議。不計手續費、期交稅與跨月價差保證金減收；你的期貨商可能收取更高保證金，實際以期貨商通知為準。行情由 GitHub Actions 定時抓取，可能延遲數十分鐘。輸入內容只存在你的瀏覽器。</p>
       <p><a href="https://github.com/twdashboard/twdashboard.github.io" target="_blank" rel="noopener">GitHub 原始碼</a> · MIT License</p>
     </footer>
   </main>
-
-  <dialog id="close-dialog">
-    <form id="close-form" method="dialog">
-      <h2>平倉</h2>
-      <p id="close-desc"></p>
-      <label>口數 <input name="qty" type="number" min="1" step="1" required></label>
-      <label>平倉價 <input name="price" type="number" min="1" step="1" required></label>
-      <label>日期 <input name="date" type="date" required></label>
-      <div class="row-form">
-        <button type="submit" value="confirm">確認平倉</button>
-        <button type="button" class="secondary" data-close-dialog>取消</button>
-      </div>
-    </form>
-  </dialog>
 </body>
 </html>

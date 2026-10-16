@@ -1,57 +1,73 @@
 # 開發慣例
 
-台指期風控儀表盤。純靜態、零相依、不用建置工具；變更紀錄見 `docs/CHANGELOG.md`。
+台指期單一部位爆倉價格試算器。純靜態、零相依、不用建置工具；變更紀錄見 `docs/CHANGELOG.md`。
 
 ## 架構與模組職責
 
 | 檔案 | 職責 |
 | --- | --- |
-| `js/contracts.js` | 契約規格（乘數）、`DEFAULT_MARGINS`、`DEFAULT_MARGIN_DATE`、稅率、代沖銷比例、壓力測試幅度 |
-| `js/risk.js` | 風控計算，純函式：不碰 DOM、不碰儲存、不修改輸入（回傳新物件） |
-| `js/store.js` | 預設 state、`normalize` 驗證、localStorage 讀寫、JSON 匯出入 |
-| `js/chart.js` | 權益曲線，手寫 SVG |
-| `js/app.js` | UI 渲染與事件；不放計算邏輯 |
+| `js/contracts.js` | 契約規格（乘數）、`DEFAULT_MARGINS`、`DEFAULT_MARGIN_DATE`、代沖銷比例、`SHOCK_OPTIONS`、`BUFFER_ZONES` |
+| `js/calc.js` | 純函式：`positionMetrics`、`requiredDeposit`、`gridLadder`、`zoneOf`、`leverageForBuffer`、`GRID_STATUS` |
+| `js/validate.js` | 共用驗證：`isNum`／`isPos`／`isPosInt`／`isDate`／`isValidMargin`／`isValidRatio`、`LIMITS`（`maxQty` 999、`maxLevels` 50） |
+| `js/store.js` | 預設 state、`normalize` 白名單、localStorage 讀寫 |
+| `js/quote.js` | `loadQuote`（視 `quote.json` 為不可信）、`quoteHintText`（純函式） |
+| `js/gauge.js` | 手寫 SVG 槓桿半圓儀表 |
+| `js/app.js` | 只負責 DOM 與事件 |
+| `scripts/fetch-quote.mjs` | 抓期交所近月報價寫成 `quote.json` |
 
-計算一律寫在 `risk.js` 並補測試，不要寫進 `app.js`。
+- 所有風控判斷（`canOpen`、`belowMaintenance`、`liquidated`、`neverLiquidates`、`gap`）寫在 `calc.js` 並補測試，不要寫進 `app.js`。
+- `app.js` 以 `FORMS` 設定驅動 calc／grid 共用的 `syncForm`／`bindForm`／`update`；新增表單欄位改設定，不複製邏輯。
+- `renderAll` 只在整份取代設定時呼叫，避免覆寫輸入中的設定表單。
+- 只用 `textContent`／DOM API，不使用 `innerHTML`。
 
 ## 資料模型
 
-localStorage key：`twdashboard.state.v1`，`version: 1`。
+localStorage key `twdashboard.state.v2`（`version: 2`）。v1 不相容、不遷移。
 
 ```
 {
-  version, account: { balance },
+  version: 2,
+  calc: { contract, side: 'long'|'short', entry, deposit, qty, shock },
+  grid: { contract, side, start, spacing, qtyPerLevel, levels, deposit },
   settings: { margins: {TX|MTX|TMF: {initial, maintenance}}, marginDate,
-              feePerSide: {code: 元/口/邊}, taxRate, liquidationRatio },
-  positions: [{ id, contract, side: 'long'|'short', qty, entry, price }],
-  equityHistory: [{ date: 'YYYY-MM-DD', equity }],   // 同日唯一、依日期排序
-  trades: [{ date, contract, side, qty, entry, exit, gross, cost, net }]
+              liquidationRatio, colorScheme: 'redUp'|'greenUp' }
 }
 ```
 
+`normalize` 逐欄白名單挑選，非法欄位回預設值；新增欄位須同步補規則與測試。
+
 ## 計算規則
 
-- 權益數 = 帳戶餘額 + 未實現損益；風險指標 = 權益數 ÷ 原始保證金。
-- 狀態：風險指標 ≤ `liquidationRatio`（預設 25%）→ 代沖銷；權益數 < 維持保證金 → 追繳（代沖銷優先判斷）。
-- 距門檻點數 = (門檻 − 權益) ÷ 每點損益；已低於門檻回傳 0，無部位或淨部位為零回傳 null。
-- 壓力測試：損益 = 每點損益 × 現價 × 幅度，保證金不隨價格變動。
-- 平倉：只扣平倉邊手續費 + 期交稅（契約金額 × `taxRate`，四捨五入）；建倉成本視為已反映在餘額。
-- 不計跨月價差保證金減收。
+- 權益數 X 滿足 `X = 存入保證金 + 方向 × (X − 均價) × 乘數 × 口數`。
+- 斷頭：權益 ≤ 原始保證金 × 口數 × `liquidationRatio`（預設 25%）；追繳：權益 < 維持保證金 × 口數。
+- 距斷頭緩衝 = 不利點數 ÷ 開倉價；分區 ≥ 20% 保守、≥ 10% 穩健、≥ 5% 積極、其餘危險。
+- 扛 shock 所需保證金 = 開倉價 × shock × 乘數 × 口數 + 斷頭線（或維持保證金），不低於原始保證金。
+- 網格：價格 ≤ 0、先被斷頭、權益 < 加碼後原始保證金即停止，並回傳原因。
+- 不計手續費、期交稅、跨月價差減收。
 
 ## 資安規則
 
-- `index.html` 的 CSP：`default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'`。禁止 inline script/style、`style=` 屬性、外部資源；確實需要時須同步修改 CSP。
-- `store.normalize` 是唯一的資料入口（載入與匯入皆經過），做白名單驗證：`side` 限 long/short、`contract` 限已知代碼、date 符合 `YYYY-MM-DD`、`qty` 正整數、價格為有限正數、原始 ≥ 維持保證金，不合法的列直接丟棄。新增欄位必須同步補驗證。
-- 插入 `innerHTML` 的字串一律用 `esc()` 跳脫；`side` 等會進 class 的值在渲染時再走白名單。新增模板時不得直接插值未跳脫字串。
-- 不接任何券商 API、不放金鑰、不發對外請求。
+- CSP：`default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'`。JS 以 CSSOM 設定 `element.style` 不受影響，但不可加 inline `style` 屬性、inline script 或外部資源；確實需要時須同步修改 CSP。
+- `quote.json` 視為不可信，`loadQuote` 只保留通過驗證的欄位。
+- Workflow：workflow 層級只有 `contents: read`，`pages`／`id-token` 只給 deploy job；actions 釘 commit SHA（checkout v4.4.0、setup-node v4.4.0、upload-pages-artifact v3.0.1、deploy-pages v4.0.5），dependabot 每月升版；checkout `persist-credentials: false`；找不到測試檔時 CI 失敗。
+- 不接券商 API、不放金鑰。
 
-## UI 慣例
+## UI 與 CSS 慣例
 
-- 紅漲綠跌（台股慣例）：`--up` 紅、`--down` 綠；同時以 +／− 號與文字標示，不只靠顏色。
-- 顏色與尺寸用 `css/style.css` 的 CSS token（`:root` 變數），深色在 `@media (prefers-color-scheme: dark)` 覆寫同名 token，不寫死色碼。
-- 手機版輸入框 font-size 須 16px，避免 iOS 自動放大。
-- 無障礙：可操作元素須能用鍵盤操作；持倉列按鈕的 aria-label 要含契約、方向、口數與成本以區分各列。
-- 重繪：`commit(next)` 只重繪資料區；設定表單只在整份取代 state 時（儲存設定、還原、匯入、清除）經 `replaceState` 重繪，避免蓋掉輸入中的內容。
+- 分區色每區只定義一次 `--zc`（`.zone-safe` 等），`.zone-text`／`.zone-pill`／`.zone-bg`／`.gauge-zone`／圖例／表格共用。
+- 斷頭相關數字固定用 `--zone-danger`，不跟漲跌配色（綠色看起來像安全）。
+- 配色切換鈕刻意用固定 `--red`／`--green`；深色模式紅綠底上用深色字 `--on-signal`。
+- 顏色用 CSS token，深色在 `@media (prefers-color-scheme: dark)` 覆寫；淺色文字色須維持 WCAG 4.5:1。
+- 手機輸入框 font-size 16px（避免 iOS 放大）；注意橫向安全區（`viewport-fit=cover`）。
+- 輸入錯誤除紅框外要有文字說明。
+
+## 行情抓取
+
+- 期交所 MIS API（`mis.taifex.com.tw/futures/api/getQuoteList`）不允許瀏覽器跨域，由 `deploy.yml` 排程執行 `scripts/fetch-quote.mjs _site/quote.json`，隨網站部署，不 commit 回 repo。
+- 排程 UTC cron：`*/10 0-5`、`*/10 7-20`、`0 21`（週一至五）；push main 與 `workflow_dispatch` 也會跑。
+- 近月以月份碼 A–L 加年份末碼自行算到期年月排序，不依賴 API 順序（注意跨十年）。
+- 單一商品失敗仍寫其他商品；全部失敗時沿用線上舊 `quote.json` 並輸出 warning。
+- 限制：排程延遲 10–30 分鐘；runner 在海外，可能被期交所擋（尚待驗證）；公開 repo 60 天無 commit 排程會被停用。
 
 ## 測試
 
@@ -59,23 +75,21 @@ localStorage key：`twdashboard.state.v1`，`version: 1`。
 node --test 'tests/**/*.test.mjs'
 ```
 
-- Node 內建 test runner（Node 22）；`node --test tests/` 在 Node 22 無法執行。
-- 目前 104 個案例，涵蓋 `contracts`、`risk`、`store`。
-- `app.js`、`chart.js` 無自動化測試；改動後以 headless Chromium 做手動 smoke test。
-- CI：`.github/workflows/test.yml`（push main 與 PR）。
+- Node 22 內建 test runner；`node --test tests/` 在 Node 22 無法執行。
+- 122 個案例：calc 55、store 28、validate 7、quote 19、fetch-quote 13。
+- `app.js`、`gauge.js` 以 headless Chromium 手動 smoke test。
+- CI：`deploy.yml`（push main／排程／手動，測試通過才部署）、`test.yml`（PR）。
 
 ## 保證金更新流程
 
-期交所（https://www.taifex.com.tw/cht/5/indexMarging）調整保證金時：
+期交所（https://www.taifex.com.tw/cht/5/indexMarging）調整時：
 
-1. 修改 `js/contracts.js` 的 `DEFAULT_MARGINS` 與 `DEFAULT_MARGIN_DATE`。
-2. 同步更新測試中引用預設值的斷言，跑全部測試。
-3. 更新 `README.md` 的保證金表，並在 `docs/CHANGELOG.md` 記一筆。
+1. 改 `js/contracts.js` 的 `DEFAULT_MARGINS` 與 `DEFAULT_MARGIN_DATE`。
+2. 同步測試與 `README.md` 保證金表，並在 `docs/CHANGELOG.md` 記一筆。
 
-已存入使用者瀏覽器的設定不會被覆寫，使用者須到設定按「還原預設」或手動修改。
+已存在使用者瀏覽器的合法設定不會被覆寫。
 
-## 部署
+## 部署與提交
 
-GitHub Pages 從 `twdashboard/twdashboard.github.io` 的 `main` 分支根目錄部署，網址 https://twdashboard.github.io/ 。無建置步驟，push main 即上線。
-
-本機預覽：`python3 -m http.server` 後開 http://localhost:8000 ，不可用 `file://`。
+- Pages 來源為 GitHub Actions；本機預覽 `python3 -m http.server`（不可用 `file://`），要測行情先 `node scripts/fetch-quote.mjs quote.json`（已 gitignore）。
+- commit 一律用 repo 層級匿名身分 `twdashboard <twdashboard@users.noreply.github.com>`。

@@ -1,271 +1,238 @@
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  defaultState, defaultSettings, normalize, importJson, exportJson, load, save, newId,
-} from '../js/store.js';
-import { DEFAULT_MARGINS } from '../js/contracts.js';
+import { defaultState, defaultSettings, normalize, load, save } from '../js/store.js';
+import { DEFAULT_MARGINS, SHOCK_OPTIONS } from '../js/contracts.js';
 
-const goodPos = (o) => ({ id: 'p1', contract: 'TX', side: 'long', qty: 1, entry: 22000, price: 22100, ...o });
-const goodTrade = (o) => ({ date: '2026-10-01', contract: 'TX', side: 'long', qty: 1, entry: 22000, exit: 22100, gross: 20000, cost: 148, net: 19852, ...o });
-const XSS = '"><img src=x onerror=alert(1)>';
+const KEY = 'twdashboard.state.v2';
 
 describe('defaultState / defaultSettings', () => {
-  test('預設值', () => {
-    const s = defaultState();
-    assert.equal(s.version, 1);
-    assert.deepEqual(s.account, { balance: 0 });
-    assert.deepEqual(s.positions, []);
-    assert.deepEqual(s.equityHistory, []);
-    assert.deepEqual(s.trades, []);
-    assert.deepEqual(s.settings, defaultSettings());
-    const st = defaultSettings();
-    assert.deepEqual(st.margins, DEFAULT_MARGINS);
-    assert.deepEqual(st.feePerSide, { TX: 0, MTX: 0, TMF: 0 });
-    assert.equal(st.taxRate, 0.00002);
-    assert.equal(st.liquidationRatio, 0.25);
+  test('每次回傳獨立物件（深層）', () => {
+    const a = defaultState();
+    const b = defaultState();
+    assert.notEqual(a, b);
+    assert.notEqual(a.calc, b.calc);
+    assert.notEqual(a.settings.margins, b.settings.margins);
+    a.calc.qty = 99;
+    a.settings.margins.TMF.initial = 1;
+    assert.equal(b.calc.qty, 1);
+    assert.equal(defaultState().settings.margins.TMF.initial, 35050);
+    assert.equal(DEFAULT_MARGINS.TMF.initial, 35050);
   });
-  test('每次回傳獨立物件，修改不污染常數', () => {
-    const a = defaultSettings();
-    a.margins.TX.initial = 1;
+  test('defaultSettings 獨立且內容正確', () => {
+    const s = defaultSettings();
+    s.margins.TX.initial = 0;
     assert.equal(defaultSettings().margins.TX.initial, 701000);
-    assert.equal(DEFAULT_MARGINS.TX.initial, 701000);
-    assert.notEqual(defaultState(), defaultState());
+    assert.deepEqual(defaultSettings(), {
+      margins: DEFAULT_MARGINS, marginDate: '2026-08-12', liquidationRatio: 0.25, colorScheme: 'redUp',
+    });
+  });
+  test('defaultState 內容', () => {
+    const s = defaultState();
+    assert.equal(s.version, 2);
+    assert.deepEqual(s.calc, { contract: 'TMF', side: 'long', entry: 47100, deposit: 75000, qty: 1, shock: 0.1 });
+    assert.deepEqual(s.grid, { contract: 'TMF', side: 'long', start: 47100, spacing: 500, qtyPerLevel: 1, levels: 6, deposit: 150000 });
   });
 });
 
-describe('normalize：基本', () => {
-  for (const v of [null, undefined, 0, 1, 'str', true, NaN]) {
-    test(`非物件 ${String(v)} → 預設`, () => assert.deepEqual(normalize(v), defaultState()));
-  }
-  test('空物件 → 預設', () => assert.deepEqual(normalize({}), defaultState()));
-  test('合法完整 state 原樣保留', () => {
+describe('normalize', () => {
+  test('非物件輸入回傳預設', () => {
+    for (const raw of [null, undefined, 0, 1, 'x', '', true, NaN]) {
+      assert.deepEqual(normalize(raw), defaultState(), String(raw));
+    }
+  });
+  test('空物件 → 預設', () => {
+    assert.deepEqual(normalize({}), defaultState());
+  });
+  test('合法值保留', () => {
     const raw = {
-      version: 1,
-      account: { balance: 1234567 },
+      calc: { contract: 'TX', side: 'short', entry: 20000.5, deposit: 1e6, qty: 999, shock: 0.2 },
+      grid: { contract: 'MTX', side: 'short', start: 21000, spacing: 100, qtyPerLevel: 3, levels: 50, deposit: 5e5 },
       settings: {
-        margins: { TX: { initial: 800000, maintenance: 600000 }, MTX: { initial: 200000, maintenance: 150000 }, TMF: { initial: 40000, maintenance: 30000 } },
-        marginDate: '2026-09-01',
-        feePerSide: { TX: 60, MTX: 25, TMF: 10 },
-        taxRate: 0.00002,
-        liquidationRatio: 0.3,
+        marginDate: '2027-01-02', liquidationRatio: 0.5, colorScheme: 'greenUp',
+        margins: { TX: { initial: 800000, maintenance: 600000 }, MTX: { initial: 100, maintenance: 100 } },
       },
-      positions: [goodPos(), goodPos({ id: 'p2', contract: 'TMF', side: 'short', qty: 3 })],
-      equityHistory: [{ date: '2026-10-01', equity: 1 }, { date: '2026-10-02', equity: 2 }],
-      trades: [goodTrade()],
     };
-    assert.deepEqual(normalize(raw), raw);
+    const s = normalize(raw);
+    assert.deepEqual(s.calc, raw.calc);
+    assert.deepEqual(s.grid, raw.grid);
+    assert.equal(s.settings.marginDate, '2027-01-02');
+    assert.equal(s.settings.liquidationRatio, 0.5);
+    assert.equal(s.settings.colorScheme, 'greenUp');
+    assert.deepEqual(s.settings.margins.TX, { initial: 800000, maintenance: 600000 });
+    assert.deepEqual(s.settings.margins.MTX, { initial: 100, maintenance: 100 });
+    assert.deepEqual(s.settings.margins.TMF, DEFAULT_MARGINS.TMF);
   });
-  test('balance 非有限數 → 0', () => {
-    assert.equal(normalize({ account: { balance: 'abc' } }).account.balance, 0);
-    assert.equal(normalize({ account: { balance: Infinity } }).account.balance, 0);
-    assert.equal(normalize({ account: null }).account.balance, 0);
-    assert.equal(normalize({ account: { balance: -5000 } }).account.balance, -5000);
+  test('每個 SHOCK_OPTIONS 都接受，其餘拒絕', () => {
+    for (const v of SHOCK_OPTIONS) assert.equal(normalize({ calc: { shock: v } }).calc.shock, v);
+    for (const v of [0.3, 0, -0.1, '0.1', 0.1000001]) assert.equal(normalize({ calc: { shock: v } }).calc.shock, 0.1);
   });
-  test('陣列欄位非陣列 → 空陣列', () => {
-    const r = normalize({ positions: 'x', equityHistory: {}, trades: 3 });
-    assert.deepEqual(r.positions, []);
-    assert.deepEqual(r.equityHistory, []);
-    assert.deepEqual(r.trades, []);
-  });
-});
-
-describe('normalize：positions（XSS 防線）', () => {
-  test('side 非 long/short 丟棄（含 XSS payload）', () => {
-    const r = normalize({ positions: [goodPos({ side: XSS }), goodPos({ id: 'ok' }), goodPos({ side: 'LONG' }), goodPos({ side: undefined }), goodPos({ side: ['long'] })] });
-    assert.deepEqual(r.positions.map((p) => p.id), ['ok']);
-  });
-  test('contract 不在白名單丟棄', () => {
-    const r = normalize({ positions: [goodPos({ contract: 'XX' }), goodPos({ contract: '__proto__' }), goodPos({ contract: XSS }), goodPos({ contract: 'tx' })] });
-    assert.deepEqual(r.positions, []);
-  });
-  test('qty 非正整數丟棄', () => {
-    for (const qty of [0, -1, 1.5, '1', NaN, Infinity, null]) {
-      assert.deepEqual(normalize({ positions: [goodPos({ qty })] }).positions, [], `qty=${qty}`);
+  test('contract / side 白名單', () => {
+    const bad = ['tx', 'XX', '', null, 1, '__proto__', 'constructor', 'toString', '"><img src=x onerror=alert(1)>'];
+    for (const v of bad) {
+      const s = normalize({ calc: { contract: v, side: v }, grid: { contract: v, side: v } });
+      assert.equal(s.calc.contract, 'TMF', String(v));
+      assert.equal(s.calc.side, 'long');
+      assert.equal(s.grid.contract, 'TMF');
+      assert.equal(s.grid.side, 'long');
     }
   });
-  test('entry/price 非正數丟棄', () => {
-    for (const k of ['entry', 'price']) {
-      for (const v of [0, -1, '22000', NaN, Infinity]) {
-        assert.deepEqual(normalize({ positions: [goodPos({ [k]: v })] }).positions, [], `${k}=${v}`);
-      }
+  test('價格與保證金需為正有限數', () => {
+    for (const v of [0, -1, NaN, Infinity, '47100', null]) {
+      const s = normalize({ calc: { entry: v, deposit: v }, grid: { start: v, spacing: v, deposit: v } });
+      assert.equal(s.calc.entry, 47100, String(v));
+      assert.equal(s.calc.deposit, 75000);
+      assert.equal(s.grid.start, 47100);
+      assert.equal(s.grid.spacing, 500);
+      assert.equal(s.grid.deposit, 150000);
     }
   });
-  test('id 非字串丟棄；null 元素丟棄', () => {
-    assert.deepEqual(normalize({ positions: [goodPos({ id: 1 }), null, 'x'] }).positions, []);
-  });
-});
-
-describe('normalize：trades', () => {
-  test('side 非 long/short 丟棄（XSS）', () => {
-    const r = normalize({ trades: [goodTrade({ side: XSS }), goodTrade()] });
-    assert.equal(r.trades.length, 1);
-    assert.equal(r.trades[0].side, 'long');
-  });
-  test('contract 不在白名單丟棄', () => {
-    assert.deepEqual(normalize({ trades: [goodTrade({ contract: 'ZZ' })] }).trades, []);
-  });
-  test('date 非 YYYY-MM-DD 丟棄', () => {
-    for (const date of ['2026/10/01', '20261001', '2026-1-1', XSS, 20261001, null, '2026-10-01T00:00:00Z']) {
-      assert.deepEqual(normalize({ trades: [goodTrade({ date })] }).trades, [], `date=${date}`);
+  test('qty / qtyPerLevel 為 1–999 整數（邊界）', () => {
+    assert.equal(normalize({ calc: { qty: 1 } }).calc.qty, 1);
+    assert.equal(normalize({ calc: { qty: 999 } }).calc.qty, 999);
+    assert.equal(normalize({ grid: { qtyPerLevel: 999 } }).grid.qtyPerLevel, 999);
+    for (const v of [0, 1000, 1.5, -1, '2']) {
+      assert.equal(normalize({ calc: { qty: v } }).calc.qty, 1, String(v));
+      assert.equal(normalize({ grid: { qtyPerLevel: v } }).grid.qtyPerLevel, 1, String(v));
     }
   });
-  test('數值欄位非有限數丟棄', () => {
-    for (const k of ['qty', 'entry', 'exit', 'gross', 'cost', 'net']) {
-      assert.deepEqual(normalize({ trades: [goodTrade({ [k]: 'x' })] }).trades, [], k);
+  test('levels 為 1–50 整數（邊界）', () => {
+    assert.equal(normalize({ grid: { levels: 1 } }).grid.levels, 1);
+    assert.equal(normalize({ grid: { levels: 50 } }).grid.levels, 50);
+    for (const v of [0, 51, 2.5, '6']) assert.equal(normalize({ grid: { levels: v } }).grid.levels, 6, String(v));
+  });
+  test('settings：marginDate 格式', () => {
+    assert.equal(normalize({ settings: { marginDate: '2026-1-1' } }).settings.marginDate, '2026-08-12');
+    assert.equal(normalize({ settings: { marginDate: '2026-01-01T00' } }).settings.marginDate, '2026-08-12');
+    assert.equal(normalize({ settings: { marginDate: 20260101 } }).settings.marginDate, '2026-08-12');
+  });
+  test('settings：liquidationRatio 0<x<1', () => {
+    for (const v of [0, 1, -0.1, 1.5, NaN, '0.3']) {
+      assert.equal(normalize({ settings: { liquidationRatio: v } }).settings.liquidationRatio, 0.25, String(v));
+    }
+    assert.equal(normalize({ settings: { liquidationRatio: 0.0001 } }).settings.liquidationRatio, 0.0001);
+    assert.equal(normalize({ settings: { liquidationRatio: 0.9999 } }).settings.liquidationRatio, 0.9999);
+  });
+  test('settings：colorScheme 只能 redUp/greenUp', () => {
+    assert.equal(normalize({ settings: { colorScheme: 'greenUp' } }).settings.colorScheme, 'greenUp');
+    for (const v of ['blue', '', 'REDUP', null]) {
+      assert.equal(normalize({ settings: { colorScheme: v } }).settings.colorScheme, 'redUp');
     }
   });
-  test('qty 非正整數丟棄', () => {
-    for (const qty of [0, -1, 1.5]) {
-      assert.deepEqual(normalize({ trades: [goodTrade({ qty })] }).trades, [], `qty=${qty}`);
+  test('settings：不合法 margins 用預設', () => {
+    const bad = [
+      { initial: 100, maintenance: 200 }, // initial < maintenance
+      { initial: 100, maintenance: 0 },
+      { initial: 100, maintenance: -1 },
+      { initial: '100', maintenance: 50 },
+      { initial: 100 },
+      null,
+      'x',
+      { initial: Infinity, maintenance: 1 },
+    ];
+    for (const m of bad) {
+      const s = normalize({ settings: { margins: { TX: m, MTX: m, TMF: m } } });
+      assert.deepEqual(s.settings.margins, DEFAULT_MARGINS, JSON.stringify(m));
     }
   });
-});
-
-describe('normalize：equityHistory', () => {
-  test('同日去重保留最後一筆並依日期排序', () => {
-    const r = normalize({ equityHistory: [
-      { date: '2026-10-03', equity: 3 },
-      { date: '2026-10-01', equity: 1 },
-      { date: '2026-10-03', equity: 33 },
-      { date: '2026-10-02', equity: 2 },
-    ] });
-    assert.deepEqual(r.equityHistory, [
-      { date: '2026-10-01', equity: 1 },
-      { date: '2026-10-02', equity: 2 },
-      { date: '2026-10-03', equity: 33 },
-    ]);
+  test('margins 只帶入 initial/maintenance，未知商品與多餘欄位丟棄', () => {
+    const s = normalize({ settings: { margins: { TMF: { initial: 2, maintenance: 1, evil: 'x' }, ZZ: { initial: 2, maintenance: 1 } } } });
+    assert.deepEqual(s.settings.margins.TMF, { initial: 2, maintenance: 1 });
+    assert.deepEqual(Object.keys(s.settings.margins).sort(), ['MTX', 'TMF', 'TX']);
   });
-  test('date 不合法或 equity 非數字丟棄，多餘欄位剔除', () => {
-    const r = normalize({ equityHistory: [
-      { date: 'bad', equity: 1 }, { date: '2026-10-01', equity: '1' }, null,
-      { date: '2026-10-02', equity: 5, evil: XSS },
-    ] });
-    assert.deepEqual(r.equityHistory, [{ date: '2026-10-02', equity: 5 }]);
+  test('未知欄位不帶入', () => {
+    const s = normalize({ evil: 1, version: 99, calc: { foo: 1 }, grid: { bar: 2 }, settings: { baz: 3 } });
+    assert.deepEqual(Object.keys(s).sort(), ['calc', 'grid', 'settings', 'version']);
+    assert.equal(s.version, 2);
+    assert.equal('foo' in s.calc, false);
+    assert.equal('bar' in s.grid, false);
+    assert.equal('baz' in s.settings, false);
+    assert.deepEqual(s, defaultState());
   });
-});
-
-describe('normalize：settings', () => {
-  test('margins initial < maintenance 用預設值', () => {
-    const r = normalize({ settings: { margins: { TX: { initial: 100, maintenance: 200 } } } });
-    assert.deepEqual(r.settings.margins.TX, DEFAULT_MARGINS.TX);
+  test('JSON 中的 __proto__ 不會污染原型', () => {
+    const raw = JSON.parse('{"__proto__":{"polluted":1},"calc":{"__proto__":{"polluted":2},"contract":"__proto__"},"settings":{"margins":{"__proto__":{"initial":2,"maintenance":1}}}}');
+    const s = normalize(raw);
+    assert.equal(({}).polluted, undefined);
+    assert.equal(s.polluted, undefined);
+    assert.equal(s.calc.polluted, undefined);
+    assert.equal(s.calc.contract, 'TMF');
+    assert.deepEqual(s.settings.margins, DEFAULT_MARGINS);
   });
-  test('margins initial = maintenance 可接受', () => {
-    const r = normalize({ settings: { margins: { MTX: { initial: 1000, maintenance: 1000 } } } });
-    assert.deepEqual(r.settings.margins.MTX, { initial: 1000, maintenance: 1000 });
-  });
-  test('margins 非數字或 maintenance ≤ 0 用預設值', () => {
-    const r = normalize({ settings: { margins: {
-      TX: { initial: '9', maintenance: 1 }, MTX: { initial: 10, maintenance: 0 }, TMF: { initial: 10, maintenance: -1 },
-    } } });
-    assert.deepEqual(r.settings.margins, DEFAULT_MARGINS);
-  });
-  test('部分 margins 合法只更新該商品', () => {
-    const r = normalize({ settings: { margins: { TMF: { initial: 40000, maintenance: 30000 } } } });
-    assert.deepEqual(r.settings.margins.TMF, { initial: 40000, maintenance: 30000 });
-    assert.deepEqual(r.settings.margins.TX, DEFAULT_MARGINS.TX);
-  });
-  test('liquidationRatio 需 0 ≤ x < 1', () => {
-    const lr = (v) => normalize({ settings: { liquidationRatio: v } }).settings.liquidationRatio;
-    assert.equal(lr(0), 0);
-    assert.equal(lr(0.5), 0.5);
-    assert.equal(lr(0.999), 0.999);
-    assert.equal(lr(1), 0.25);
-    assert.equal(lr(1.5), 0.25);
-    assert.equal(lr(-0.1), 0.25);
-    assert.equal(lr('0.3'), 0.25);
-    assert.equal(lr(NaN), 0.25);
-  });
-  test('taxRate、feePerSide 需非負數', () => {
-    const r = normalize({ settings: { taxRate: -1, feePerSide: { TX: -5, MTX: 'x', TMF: 12 } } });
-    assert.equal(r.settings.taxRate, 0.00002);
-    assert.deepEqual(r.settings.feePerSide, { TX: 0, MTX: 0, TMF: 12 });
-    assert.equal(normalize({ settings: { taxRate: 0 } }).settings.taxRate, 0);
-  });
-  test('marginDate 格式不合法用預設值', () => {
-    assert.equal(normalize({ settings: { marginDate: XSS } }).settings.marginDate, defaultSettings().marginDate);
-    assert.equal(normalize({ settings: { marginDate: '2026-01-02' } }).settings.marginDate, '2026-01-02');
-  });
-  test('settings 為 null 不炸', () => {
-    assert.deepEqual(normalize({ settings: null }).settings, defaultSettings());
-  });
-  test('未知欄位不會帶入輸出', () => {
-    const r = normalize({ evil: 1, settings: { evil: 2 } });
-    assert.equal('evil' in r, false);
-    assert.equal('evil' in r.settings, false);
-  });
-});
-
-describe('importJson / exportJson', () => {
-  test('壞 JSON 丟例外', () => {
-    assert.throws(() => importJson('{bad'), SyntaxError);
-    assert.throws(() => importJson(''), SyntaxError);
-  });
-  test('round-trip', () => {
-    const s = normalize({ account: { balance: 10 }, positions: [goodPos()], trades: [goodTrade()], equityHistory: [{ date: '2026-10-01', equity: 10 }] });
-    const text = exportJson(s);
-    assert.equal(typeof text, 'string');
-    assert.ok(text.includes('\n  '), '應為 2 空白縮排');
-    assert.deepEqual(importJson(text), s);
-  });
-  test('import 會經過 normalize 清洗', () => {
-    const r = importJson(JSON.stringify({ positions: [goodPos({ side: XSS })] }));
-    assert.deepEqual(r.positions, []);
-  });
-  test('合法 JSON 但非物件 → 預設', () => {
-    assert.deepEqual(importJson('null'), defaultState());
-    assert.deepEqual(importJson('42'), defaultState());
+  test('calc/grid/settings 為非物件時用預設', () => {
+    const s = normalize({ calc: 'x', grid: 5, settings: null });
+    assert.deepEqual(s, defaultState());
   });
 });
 
 describe('load / save（localStorage stub）', () => {
+  const had = Object.hasOwn(globalThis, 'localStorage');
   const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-  const setStorage = (obj) => Object.defineProperty(globalThis, 'localStorage', { value: obj, configurable: true, writable: true });
-  const memStorage = () => {
-    const m = new Map();
-    return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), _m: m };
-  };
+  const stub = (impl) => Object.defineProperty(globalThis, 'localStorage', { value: impl, configurable: true, writable: true });
   afterEach(() => {
-    if (original) Object.defineProperty(globalThis, 'localStorage', original);
+    if (had && original) Object.defineProperty(globalThis, 'localStorage', original);
     else delete globalThis.localStorage;
   });
+  const memory = () => {
+    const map = new Map();
+    return { map, getItem: (k) => (map.has(k) ? map.get(k) : null), setItem: (k, v) => map.set(k, String(v)) };
+  };
 
-  test('無資料 → 預設', () => {
-    setStorage(memStorage());
-    assert.deepEqual(load(), defaultState());
-  });
-  test('save 後 load 取回且經 normalize', () => {
-    const st = memStorage();
-    setStorage(st);
-    const s = normalize({ account: { balance: 99 }, positions: [goodPos()] });
+  test('save 寫入 twdashboard.state.v2 並回傳 true；load 讀回', () => {
+    const ls = memory();
+    stub(ls);
+    const s = defaultState();
+    s.calc.contract = 'TX';
+    s.settings.colorScheme = 'greenUp';
     assert.equal(save(s), true);
-    assert.equal(st._m.size, 1);
+    assert.deepEqual([...ls.map.keys()], [KEY]);
+    assert.deepEqual(JSON.parse(ls.map.get(KEY)), s);
     assert.deepEqual(load(), s);
   });
-  test('儲存內容為壞 JSON → 預設', () => {
-    setStorage({ getItem: () => '{oops', setItem() {} });
+  test('沒有資料 → 預設', () => {
+    stub(memory());
     assert.deepEqual(load(), defaultState());
   });
-  test('儲存內容含 XSS side → 被清掉', () => {
-    setStorage({ getItem: () => JSON.stringify({ positions: [goodPos({ side: XSS })] }), setItem() {} });
-    assert.deepEqual(load().positions, []);
+  test('load 讀的是 v2 key', () => {
+    const ls = memory();
+    ls.map.set('twdashboard.state.v1', JSON.stringify({ calc: { contract: 'TX' } }));
+    stub(ls);
+    assert.equal(load().calc.contract, 'TMF');
+    ls.map.set(KEY, JSON.stringify({ calc: { contract: 'MTX' } }));
+    assert.equal(load().calc.contract, 'MTX');
   });
-  test('getItem 丟例外 → load 回傳預設', () => {
-    setStorage({ getItem: () => { throw new Error('SecurityError'); }, setItem() {} });
+  test('load 經過 normalize（不合法值被取代）', () => {
+    const ls = memory();
+    ls.map.set(KEY, JSON.stringify({ calc: { side: '"><img onerror=alert(1)>', qty: 5 }, extra: 1 }));
+    stub(ls);
+    const s = load();
+    assert.equal(s.calc.side, 'long');
+    assert.equal(s.calc.qty, 5);
+    assert.equal('extra' in s, false);
+  });
+  test('壞 JSON → 預設', () => {
+    const ls = memory();
+    ls.map.set(KEY, '{not json');
+    stub(ls);
     assert.deepEqual(load(), defaultState());
   });
-  test('setItem 丟例外 → save 回傳 false', () => {
-    setStorage({ getItem: () => null, setItem: () => { throw new Error('QuotaExceededError'); } });
-    assert.equal(save(defaultState()), false);
+  test('JSON 為 null / 數字 → 預設', () => {
+    const ls = memory();
+    stub(ls);
+    ls.map.set(KEY, 'null');
+    assert.deepEqual(load(), defaultState());
+    ls.map.set(KEY, '42');
+    assert.deepEqual(load(), defaultState());
+  });
+  test('getItem 丟例外 → 預設', () => {
+    stub({ getItem() { throw new Error('SecurityError'); }, setItem() {} });
+    assert.deepEqual(load(), defaultState());
   });
   test('localStorage 不存在 → load 預設、save false', () => {
-    setStorage(undefined);
+    delete globalThis.localStorage;
     assert.deepEqual(load(), defaultState());
     assert.equal(save(defaultState()), false);
   });
-});
-
-test('newId 回傳 UUID 且不重複', () => {
-  const a = newId();
-  assert.match(a, /^[0-9a-f-]{36}$/);
-  assert.notEqual(a, newId());
+  test('setItem 丟例外 → save 回傳 false', () => {
+    stub({ getItem: () => null, setItem() { throw new Error('QuotaExceededError'); } });
+    assert.equal(save(defaultState()), false);
+  });
 });

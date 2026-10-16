@@ -1,350 +1,477 @@
-// 介面層：讀取表單、更新 state、重新渲染。所有計算交給 risk.js。
+// 介面層：分頁切換、讀取輸入、即時重算與渲染。所有風控判斷交給 calc.js。
 
-import { CONTRACTS, CONTRACT_CODES } from './contracts.js';
-import {
-  STATUS,
-  computeSummary,
-  stressTest,
-  unrealizedPnl,
-  closePosition,
-  drawdown,
-  upsertEquity,
-} from './risk.js';
+import { CONTRACTS, CONTRACT_CODES, BUFFER_ZONES, SHOCK_OPTIONS } from './contracts.js';
+import { positionMetrics, requiredDeposit, gridLadder, leverageForBuffer, GRID_STATUS } from './calc.js';
+import { loadQuote, quoteHintText } from './quote.js';
+import { renderGauge } from './gauge.js';
+import { LIMITS, isValidMargin, isValidRatio } from './validate.js';
 import * as store from './store.js';
-import { renderEquityChart } from './chart.js';
 
-const $ = (sel) => document.querySelector(sel);
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-const intFmt = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
-const money = (n) => intFmt.format(Math.round(n));
-const signedMoney = (n) => (n > 0 ? '+' : '') + money(n);
-const pct = (r, digits = 1) => (r === null ? '—' : `${(r * 100).toFixed(digits)}%`);
-const signedPct = (r) => (r > 0 ? '+' : '') + pct(r, 0);
-const lev = (x) => (x === null ? '—' : `${x.toFixed(2)} 倍`);
-// 台股慣例：紅漲（獲利）綠跌（虧損）
-const pnlClass = (n) => (n > 0 ? 'up' : n < 0 ? 'down' : '');
-const sideLabel = (side) => (side === 'short' ? '空' : '多');
-const today = () => new Date().toLocaleDateString('sv-SE');
+const fmt0 = new Intl.NumberFormat('zh-TW', { maximumFractionDigits: 0 });
+const fmt1 = new Intl.NumberFormat('zh-TW', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const money = (n) => `NT$ ${fmt0.format(Math.round(n))}`;
+const points = (n) => `${fmt0.format(Math.round(n))} 點`;
+const pct = (r, d = 1) => `${(r * 100).toFixed(d)}%`;
+const signedPct = (r) => (r > 0 ? '+' : '') + pct(r, 2);
 
-const STATUS_LABEL = {
-  [STATUS.FLAT]: '無部位',
-  [STATUS.OK]: '正常',
-  [STATUS.MARGIN_CALL]: '低於維持保證金',
-  [STATUS.LIQUIDATION]: '達代沖銷',
-};
+const setText = (id, text) => { document.getElementById(id).textContent = text; };
+const setTexts = (map) => { for (const [id, text] of Object.entries(map)) setText(id, text); };
 
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/** 建立元素：props 直接指定到元素屬性（className、textContent、colSpan…），子節點可為字串或元素 */
+function h(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
 }
 
 let state = store.load();
-let closingId = null;
+let quote = null;
 
-function commit(next) {
-  state = next;
+function persist() {
   $('#storage-warning').hidden = store.save(state);
-  render();
 }
 
-// 整份取代設定時使用；一般 commit 不重繪設定表單，以免蓋掉使用者正在輸入的內容
-function replaceState(next) {
-  commit(next);
-  renderSettings();
+// ---------- 兩個試算表單（爆倉計算、網格）共用的輸入邏輯 ----------
+
+const FORMS = {
+  calc: {
+    form: '#calc-form',
+    priceField: 'entry',
+    fields: {
+      entry: { label: '開倉價格' },
+      deposit: { label: '存入保證金' },
+      qty: { label: '持倉口數', max: LIMITS.maxQty },
+    },
+    render: () => renderCalc(),
+  },
+  grid: {
+    form: '#grid-form',
+    priceField: 'start',
+    fields: {
+      start: { label: '起始價格' },
+      spacing: { label: '每格間距' },
+      qtyPerLevel: { label: '每格口數', max: LIMITS.maxQty },
+      levels: { label: '格數', max: LIMITS.maxLevels },
+      deposit: { label: '存入保證金' },
+    },
+    render: () => renderGrid(),
+  },
+};
+
+function update(key, patch) {
+  state = { ...state, [key]: { ...state[key], ...patch } };
+  persist();
+  FORMS[key].render();
+  renderQuoteHint(key);
 }
 
-const setPrice = (match, price) => state.positions.map((p) => (match(p) ? { ...p, price } : p));
-
-function pointsText(points) {
-  if (points === null) return '—';
-  if (points === 0) return '已觸及';
-  return `指數${points < 0 ? '跌' : '漲'} ${money(Math.abs(points))} 點`;
+function setSideButtons(form, side) {
+  for (const b of $$('[data-side]', form)) b.setAttribute('aria-pressed', String(b.dataset.side === side));
 }
 
-function kpi(label, value, { cls = '', note = '' } = {}) {
-  return `<div class="kpi ${cls}"><div class="kpi-label">${label}</div>`
-    + `<div class="kpi-value">${value}</div>${note ? `<div class="kpi-note">${note}</div>` : ''}</div>`;
+/** 把 state 寫回表單欄位並清除錯誤標記 */
+function syncForm(key) {
+  const cfg = FORMS[key];
+  const form = $(cfg.form);
+  const values = state[key];
+  form.contract.value = values.contract;
+  for (const name of Object.keys(cfg.fields)) {
+    form[name].value = values[name];
+    form[name].removeAttribute('aria-invalid');
+  }
+  setSideButtons(form, values.side);
+  $('[data-form-error]', form).textContent = '';
 }
 
-function renderSummary(sum) {
-  const badge = $('#status-badge');
-  badge.textContent = STATUS_LABEL[sum.status];
-  badge.className = `badge status-${sum.status}`;
+/** 驗證單一數字欄位；有 max 的欄位視為整數。回傳合法值或 null，並更新錯誤提示 */
+function readField(key, input) {
+  const { label, max } = FORMS[key].fields[input.name];
+  const v = Number(input.value);
+  const ok = input.value !== '' && Number.isFinite(v) && v > 0 && (max === undefined || (Number.isInteger(v) && v <= max));
+  input.toggleAttribute('aria-invalid', !ok);
 
-  const net = sum.netTxEquivalent;
-  const netText = net === 0 ? '0 口' : `${net > 0 ? '多' : '空'} ${Math.abs(net).toFixed(2)} 口`;
-
-  $('#kpis').innerHTML = [
-    kpi('權益數', money(sum.equity)),
-    kpi('未實現損益', signedMoney(sum.unrealized), { cls: pnlClass(sum.unrealized) }),
-    kpi('風險指標', pct(sum.riskRatio), { cls: `status-${sum.status}`, note: '權益數 ÷ 原始保證金' }),
-    kpi('原始／維持保證金', `${money(sum.initialMargin)}`, { note: `維持 ${money(sum.maintenanceMargin)}` }),
-    kpi('超額保證金', signedMoney(sum.excessMargin), { cls: sum.excessMargin < 0 ? 'warn' : '', note: '權益數 − 原始保證金' }),
-    kpi('距追繳', pointsText(sum.pointsToMarginCall), { note: '權益數跌破維持保證金' }),
-    kpi('距代沖銷', pointsText(sum.pointsToLiquidation), { note: `風險指標 ≤ ${pct(state.settings.liquidationRatio, 0)}` }),
-    kpi('淨部位（大台口數）', netText, { note: `每點 ${signedMoney(sum.perPoint)} 元` }),
-    kpi('槓桿（淨／總）', lev(sum.netLeverage), { note: `總曝險 ${lev(sum.grossLeverage)}` }),
-  ].join('');
+  const form = $(FORMS[key].form);
+  const invalid = $$('input[aria-invalid]', form).map((i) => {
+    const f = FORMS[key].fields[i.name];
+    return f.max === undefined ? `${f.label}需為正數` : `${f.label}需為 1 到 ${f.max} 的整數`;
+  });
+  $('[data-form-error]', form).textContent = invalid.join('；');
+  return ok ? v : null;
 }
 
-/** 表格內容；沒有資料時顯示跨欄提示列 */
-function tableRows(items, cols, emptyText, rowFn) {
-  return items.length === 0
-    ? `<tr><td colspan="${cols}" class="muted">${emptyText}</td></tr>`
-    : items.map(rowFn).join('');
-}
+function bindForm(key) {
+  const cfg = FORMS[key];
+  const form = $(cfg.form);
+  const errorEl = $('[data-form-error]', form);
+  errorEl.id = `${key}-error`;
+  for (const [name, f] of Object.entries(cfg.fields)) {
+    form[name].setAttribute('aria-describedby', errorEl.id);
+    if (f.max !== undefined) form[name].max = String(f.max);
+  }
 
-// side 只會是 long／short；仍以白名單產生 class，避免任何未驗證字串進入 HTML
-const sideCell = (side) => `<td class="${side === 'short' ? 'side-short' : 'side-long'}">${sideLabel(side)}</td>`;
+  form.addEventListener('input', (e) => {
+    const t = e.target;
+    if (t.name === 'contract') update(key, { contract: t.value });
+    else if (t.name in cfg.fields) {
+      const v = readField(key, t);
+      if (v !== null) update(key, { [t.name]: v });
+    }
+  });
 
-function renderPositions() {
-  const { margins } = state.settings;
-  $('#positions-body').innerHTML = tableRows(state.positions, 8, '尚無部位', (p) => {
-    const pnl = unrealizedPnl(p);
-    const label = esc(`${CONTRACTS[p.contract].name} ${sideLabel(p.side)} ${p.qty} 口 成本 ${p.entry}`);
-    return `<tr>
-      <td>${esc(CONTRACTS[p.contract].name)}</td>
-      ${sideCell(p.side)}
-      <td class="num">${p.qty}</td>
-      <td class="num">${money(p.entry)}</td>
-      <td class="num"><input class="inline-price" type="number" min="1" step="1" value="${p.price}" data-price-id="${esc(p.id)}" aria-label="現價：${label}"></td>
-      <td class="num ${pnlClass(pnl)}">${signedMoney(pnl)}</td>
-      <td class="num">${money(p.qty * margins[p.contract].initial)}</td>
-      <td class="actions"><button type="button" class="small" data-close="${esc(p.id)}" aria-label="平倉：${label}">平倉</button>
-        <button type="button" class="small danger" data-delete="${esc(p.id)}" aria-label="刪除：${label}">刪除</button></td>
-    </tr>`;
+  form.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-side]');
+    if (!b) return;
+    update(key, { side: b.dataset.side });
+    setSideButtons(form, b.dataset.side);
+  });
+
+  $('[data-fetch-quote]', form).addEventListener('click', async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.textContent = '抓取中…';
+    await refreshQuote();
+    b.disabled = false;
+    b.textContent = '抓取行情';
+    const q = quote?.quotes[state[key].contract];
+    if (q) {
+      update(key, { [cfg.priceField]: q.last });
+      syncForm(key);
+    }
   });
 }
 
-function renderStress() {
-  const rows = state.positions.length === 0 ? [] : stressTest(state);
-  $('#stress-body').innerHTML = tableRows(rows, 5, '尚無部位', (r) => `<tr>
-      <td class="${pnlClass(r.shock)}">${signedPct(r.shock)}</td>
-      <td class="num ${pnlClass(r.pnl)}">${signedMoney(r.pnl)}</td>
-      <td class="num">${money(r.equity)}</td>
-      <td class="num">${pct(r.riskRatio)}</td>
-      <td><span class="pill status-${r.status}">${STATUS_LABEL[r.status]}</span></td>
-    </tr>`);
+// ---------- 行情 ----------
+
+function renderQuoteHint(key) {
+  $(`${FORMS[key].form} [data-quote-hint]`).textContent = quoteHintText(quote, state[key].contract);
 }
 
-function renderEquity() {
-  const history = state.equityHistory;
-  const dd = drawdown(history);
-  const range = dd.peakDate ? `（${dd.peakDate} → ${dd.troughDate}）` : '';
-  $('#drawdown-stats').innerHTML = history.length === 0
-    ? '<p class="muted">尚無權益紀錄。每天收盤後按「記錄權益」，就能追蹤權益曲線與回撤。</p>'
-    : [
-      kpi('最大回撤', money(dd.maxDrawdown), { cls: dd.maxDrawdown > 0 ? 'down' : '', note: pct(dd.maxDrawdownPct) + range }),
-      kpi('目前回撤', money(dd.currentDrawdown), { cls: dd.currentDrawdown > 0 ? 'down' : '', note: pct(dd.currentDrawdownPct) }),
-      kpi('紀錄筆數', String(history.length)),
-    ].join('');
-  renderEquityChart($('#equity-chart'), history, dd, money);
-  $('#equity-body').innerHTML = tableRows([...history].reverse(), 3, '尚無權益紀錄', (h) => `<tr>
-      <td>${esc(h.date)}</td><td class="num">${money(h.equity)}</td>
-      <td class="actions"><button type="button" class="small danger" data-delete-equity="${esc(h.date)}" aria-label="刪除 ${esc(h.date)} 權益紀錄">刪除</button></td>
-    </tr>`);
+async function refreshQuote() {
+  try {
+    quote = await loadQuote();
+  } catch {
+    quote = null;
+  }
+  renderQuoteHint('calc');
+  renderQuoteHint('grid');
 }
 
-function renderTrades() {
-  $('#trades-body').innerHTML = tableRows([...state.trades].reverse(), 9, '尚無平倉紀錄', (t) => `<tr>
-      <td>${esc(t.date)}</td><td>${esc(t.contract)}</td>${sideCell(t.side)}
-      <td class="num">${t.qty}</td><td class="num">${money(t.entry)}</td><td class="num">${money(t.exit)}</td>
-      <td class="num ${pnlClass(t.gross)}">${signedMoney(t.gross)}</td><td class="num">${money(t.cost)}</td>
-      <td class="num ${pnlClass(t.net)}">${signedMoney(t.net)}</td>
-    </tr>`);
+// ---------- ① 爆倉價格計算 ----------
+
+function gaugeZones(maxLeverage, ratio) {
+  const zones = [];
+  let from = 0;
+  for (const z of BUFFER_ZONES) {
+    const to = z.min === -Infinity ? maxLeverage : leverageForBuffer(z.min, maxLeverage, ratio);
+    zones.push({ ...z, from, to });
+    from = to;
+  }
+  return zones;
+}
+
+function renderLeverage(c, m) {
+  const zones = gaugeZones(m.maxLeverage, state.settings.liquidationRatio);
+  renderGauge($('#gauge'), { leverage: m.leverage, max: m.maxLeverage, zones });
+  setTexts({
+    'lev-value': fmt1.format(m.leverage),
+    'lev-zone': `${m.zone.label} · 可扛反向 ${pct(Math.max(m.buffer, 0))}`,
+    'lev-sub': `契約市值 ${money(m.notional)} ÷ 存入 ${money(c.deposit)}`,
+  });
+  $('#lev-zone').className = `gauge-zone-label zone-text zone-${m.zone.key}`;
+
+  $('#zone-legend').replaceChildren(...zones.map((z, i) => {
+    const cond = z.min === -Infinity ? `< ${pct(BUFFER_ZONES[i - 1].min, 0)}` : `≥ ${pct(z.min, 0)}`;
+    // 分區可能超過最大槓桿（存入保證金低於原始保證金才到得了），如實標示
+    const text = z.from >= m.maxLeverage
+      ? `${z.label}（可扛 ${cond}）：需低於原始保證金，無法開倉`
+      : `${z.label} ${fmt1.format(z.from)}–${fmt1.format(Math.min(z.to, m.maxLeverage))}x（可扛 ${cond}）`;
+    return h('li', { className: `zone-${z.key}`, textContent: text });
+  }));
+}
+
+function renderRisk(c, m) {
+  const { margins, liquidationRatio } = state.settings;
+  const warn = $('#calc-open-warning');
+  if (m.liquidated) warn.textContent = '存入保證金已低於斷頭線，這個部位一開倉就會被代沖銷。';
+  else if (!m.canOpen) warn.textContent = `存入保證金低於原始保證金 ${money(m.initialMargin)}，期貨商不會讓你開這個部位。`;
+  warn.hidden = m.canOpen && !m.liquidated;
+
+  $('#risk-badge').textContent = m.zone.label;
+  $('#risk-badge').className = `pill zone-pill zone-${m.zone.key}`;
+
+  let mcText = '—';
+  if (m.belowMaintenance) mcText = '已低於維持保證金';
+  else if (m.marginCallPrice > 0) mcText = points(m.marginCallPrice);
+
+  const maintRatio = margins[c.contract].maintenance / margins[c.contract].initial;
+  setTexts({
+    'liq-price': m.neverLiquidates ? '不會斷頭（價格歸零前）' : points(m.liquidationPrice),
+    'liq-distance': m.neverLiquidates
+      ? '—'
+      : `${signedPct((m.liquidationPrice - c.entry) / c.entry)}（${fmt0.format(m.liquidationPoints)} 點）`,
+    'mc-price': mcText,
+    'risk-ratio': pct(m.riskRatio),
+    'risk-ratio-note': `低於 ${pct(maintRatio)} 追繳 · 低於 ${pct(liquidationRatio, 0)} 斷頭`,
+  });
+
+  const scale = 4; // 量表 0% ~ 400%
+  const meter = $('#risk-meter');
+  meter.style.width = `${Math.min(m.riskRatio / scale, 1) * 100}%`;
+  meter.className = `meter-fill zone-bg zone-${m.zone.key}`;
+  $('#risk-mark').style.left = `${(liquidationRatio / scale) * 100}%`;
+}
+
+function renderAdvice(c, m) {
+  const wrap = $('#shock-options');
+  if (wrap.childElementCount === 0) {
+    wrap.append(...SHOCK_OPTIONS.map((sh) => h('button', { type: 'button', value: String(sh) })));
+  }
+  for (const b of $$('button', wrap)) {
+    const sh = Number(b.value);
+    b.setAttribute('aria-pressed', String(sh === c.shock));
+    b.replaceChildren(pct(sh, 0), h('small', { textContent: points(c.entry * sh) }));
+  }
+
+  const need = requiredDeposit(c, state.settings, c.shock);
+  const shock = pct(c.shock, 0);
+  setTexts({
+    'advice-buffer': m.liquidated
+      ? '目前一開倉就在斷頭線以下'
+      : `目前可扛反向 ${pct(m.buffer)}（${points(m.liquidationPoints)}）才會斷頭`,
+    'advice-loss-label': `反向 ${shock}（${points(c.entry * c.shock)}）虧損`,
+    'advice-loss': money(need.loss),
+    'advice-liq': money(need.avoidLiquidation),
+    'advice-mc': money(need.avoidMarginCall),
+    'advice-gap': need.gap > 0
+      ? `還差 ${money(need.gap)} 才扛得住 ${shock} 不被斷頭。`
+      : `已足夠扛住 ${shock} 不被斷頭（多出 ${money(-need.gap)}）。`,
+  });
+  $('#advice-gap').className = `advice-gap ${need.gap > 0 ? 'bad' : 'good'}`;
+}
+
+function renderDetail(m) {
+  setTexts({
+    'd-notional': money(m.notional),
+    'd-initial': money(m.initialMargin),
+    'd-maint': money(m.maintenanceMargin),
+    'd-ratio': pct(state.settings.liquidationRatio, 0),
+    'd-liq-equity': money(m.liquidationEquity),
+    'd-maxloss': m.maxLoss > 0 ? money(m.maxLoss) : '—',
+    'd-lev': `${fmt1.format(m.leverage)}x ／ ${fmt1.format(m.maxLeverage)}x`,
+  });
+}
+
+function renderCalc() {
+  const c = state.calc;
+  const { margins } = state.settings;
+  const m = positionMetrics(c, state.settings);
+  setText('calc-contract-info',
+    `原始保證金 ${money(margins[c.contract].initial)} · 維持 ${money(margins[c.contract].maintenance)} · 乘數 ${m.multiplier}`);
+  renderLeverage(c, m);
+  renderRisk(c, m);
+  renderAdvice(c, m);
+  renderDetail(m);
+}
+
+function bindCalcExtras() {
+  const form = $('#calc-form');
+  form.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const c = state.calc;
+    let patch = null;
+    if (b.dataset.step) {
+      const key = b.dataset.step;
+      const next = c[key] + Number(b.dataset.delta);
+      if (next >= 1 && (key !== 'qty' || next <= LIMITS.maxQty)) patch = { [key]: next };
+    } else if (b.dataset.qty) {
+      patch = { qty: Number(b.dataset.qty) };
+    } else if (b.dataset.depositMult) {
+      patch = { deposit: Number(b.dataset.depositMult) * state.settings.margins[c.contract].initial * c.qty };
+    } else if (b.id === 'calc-reset') {
+      patch = store.defaultState().calc;
+    }
+    if (patch) {
+      update('calc', patch);
+      syncForm('calc');
+    }
+  });
+
+  $('#shock-options').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b) update('calc', { shock: Number(b.value) });
+  });
+}
+
+// ---------- ② 網格倉位階梯 ----------
+
+function gridRow(r) {
+  const num = (text) => h('td', { className: 'num', textContent: text });
+  const head = [h('td', { textContent: String(r.level) }), num(fmt0.format(r.price))];
+  if (r.status === GRID_STATUS.OK) {
+    return h('tr', { className: `zone-row zone-${r.zone.key}` }, ...head,
+      num(String(r.qty)),
+      num(fmt1.format(r.avg)),
+      num(`${fmt1.format(r.leverage)}x`),
+      num(pct(r.riskRatio, 0)),
+      num(r.marginCallPrice > 0 ? fmt0.format(r.marginCallPrice) : '—'),
+      num(r.liquidationPrice > 0 ? fmt0.format(r.liquidationPrice) : '—'),
+      num(r.liquidationPrice > 0 ? pct(r.buffer) : '不會斷頭'));
+  }
+  const reason = {
+    [GRID_STATUS.NO_MARGIN]: () => `保證金不足無法加碼：權益 ${money(r.equity)} ＜ 需求 ${money(r.required)}`,
+    [GRID_STATUS.LIQUIDATED]: () => `到不了這格：價格先觸及斷頭價 ${fmt0.format(r.liquidationPrice)}`,
+    [GRID_STATUS.INVALID_PRICE]: () => '價格 ≤ 0，網格超出合理範圍',
+  }[r.status]();
+  return h('tr', { className: 'stop-row' }, ...head, h('td', { className: 'stop', colSpan: 7, textContent: reason }));
+}
+
+function gridSummary(g, rows) {
+  const okRows = rows.filter((r) => r.status === GRID_STATUS.OK);
+  const last = okRows[okRows.length - 1];
+  const stop = rows.find((r) => r.status !== GRID_STATUS.OK);
+  if (!last) {
+    return stop?.status === GRID_STATUS.NO_MARGIN
+      ? `存入保證金不足以開第一格（需要 ${money(stop.required)}）。`
+      : '請檢查輸入。';
+  }
+  const head = `最多加碼到第 ${last.level} 格（${fmt0.format(last.price)}），共 ${last.qty} 口，均價 ${fmt1.format(last.avg)}；`
+    + (last.liquidationPrice > 0
+      ? `此時斷頭價 ${fmt0.format(last.liquidationPrice)}，距斷頭 ${pct(last.buffer)}，`
+      : '價格歸零前都不會斷頭，')
+    + `槓桿 ${fmt1.format(last.leverage)}x。`;
+  const tail = {
+    [GRID_STATUS.NO_MARGIN]: `第 ${stop?.level} 格保證金不足，無法再加碼。`,
+    [GRID_STATUS.LIQUIDATED]: `價格到第 ${stop?.level} 格前就會先被斷頭。`,
+    [GRID_STATUS.INVALID_PRICE]: `第 ${stop?.level} 格價格 ≤ 0，只有前 ${last.level} 格有效。`,
+  }[stop?.status] ?? `${g.levels} 格全部可執行。`;
+  return `${head} ${tail}`;
+}
+
+function renderGrid() {
+  const rows = gridLadder(state.grid, state.settings);
+  $('#grid-body').replaceChildren(...rows.map(gridRow));
+  setText('grid-summary', gridSummary(state.grid, rows));
+}
+
+// ---------- ③ 法規與設定 ----------
+
+function renderRules() {
+  const { margins, liquidationRatio } = state.settings;
+  for (const el of $$('[data-liq-ratio]')) el.textContent = pct(liquidationRatio, 0);
+  const { initial, maintenance } = margins.TMF;
+  const gap = (initial - maintenance) / CONTRACTS.TMF.multiplier;
+  setText('rules-example', `以微台為例，原始 ${money(initial)}、維持 ${money(maintenance)}，相差 ${fmt0.format(initial - maintenance)} 元 ÷ 乘數 ${CONTRACTS.TMF.multiplier} ≈ ${points(gap)}，指數反向走這麼多就會收到追繳。`);
 }
 
 function renderSettings() {
   const s = state.settings;
-  $('#settings-body').innerHTML = CONTRACT_CODES.map((code) => `<tr>
-      <td>${esc(CONTRACTS[code].name)}</td>
-      <td class="num"><input name="initial-${code}" type="number" min="1" step="1" value="${s.margins[code].initial}" required aria-label="${code} 原始保證金"></td>
-      <td class="num"><input name="maintenance-${code}" type="number" min="1" step="1" value="${s.margins[code].maintenance}" required aria-label="${code} 維持保證金"></td>
-      <td class="num"><input name="fee-${code}" type="number" min="0" step="1" value="${s.feePerSide[code]}" required aria-label="${code} 手續費"></td>
-    </tr>`).join('');
-  const form = $('#settings-form');
-  form.marginDate.value = s.marginDate;
-  form.taxRate.value = +(s.taxRate * 100000).toFixed(4);
-  form.liquidationRatio.value = +(s.liquidationRatio * 100).toFixed(2);
+  const marginInput = (code, kind) => {
+    const input = h('input', { type: 'number', name: `${kind}-${code}`, min: '1', step: '1', required: true, value: String(s.margins[code][kind]) });
+    input.setAttribute('inputmode', 'numeric');
+    input.setAttribute('aria-label', `${CONTRACTS[code].short}${kind === 'initial' ? '原始' : '維持'}保證金`);
+    return h('td', { className: 'num' }, input);
+  };
+  $('#settings-body').replaceChildren(...CONTRACT_CODES.map((code) => h('tr', {},
+    h('td', { textContent: CONTRACTS[code].short }),
+    marginInput(code, 'initial'),
+    marginInput(code, 'maintenance'))));
+  const f = $('#settings-form');
+  f.marginDate.value = s.marginDate;
+  f.liquidationRatio.value = +(s.liquidationRatio * 100).toFixed(2);
 }
 
-function render() {
-  renderSummary(computeSummary(state));
-  renderPositions();
-  renderStress();
-  renderEquity();
-  renderTrades();
-  $('#account-form').balance.value = state.account.balance;
-}
-
-function fillContractSelects() {
-  const options = CONTRACT_CODES.map((c) => `<option value="${c}">${esc(CONTRACTS[c].name)}</option>`).join('');
-  $('#position-form').contract.innerHTML = options;
-  $('#price-form').contract.insertAdjacentHTML('beforeend', options);
-}
-
-function bindEvents() {
-  $('#account-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const balance = Number(e.target.balance.value);
-    if (!Number.isFinite(balance)) return;
-    commit({ ...state, account: { ...state.account, balance } });
-  });
-
-  $('#price-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const contract = e.target.contract.value;
-    const price = Number(e.target.price.value);
-    if (!(price > 0)) return;
-    commit({
-      ...state,
-      positions: setPrice((p) => contract === 'ALL' || p.contract === contract, price),
-    });
-  });
-
-  $('#position-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const f = e.target;
-    const qty = Number(f.qty.value);
-    const entry = Number(f.entry.value);
-    const price = f.price.value === '' ? entry : Number(f.price.value);
-    if (!Number.isInteger(qty) || qty <= 0 || !(entry > 0) || !(price > 0)) return;
-    const pos = { id: store.newId(), contract: f.contract.value, side: f.side.value, qty, entry, price };
-    commit({ ...state, positions: [...state.positions, pos] });
-    f.qty.value = '';
-    f.entry.value = '';
-    f.price.value = '';
-  });
-
-  $('#positions-body').addEventListener('change', (e) => {
-    const id = e.target.dataset.priceId;
-    if (!id) return;
-    const price = Number(e.target.value);
-    if (!(price > 0)) {
-      render();
-      return;
-    }
-    commit({ ...state, positions: setPrice((p) => p.id === id, price) });
-  });
-
-  $('#positions-body').addEventListener('click', (e) => {
-    const { close, delete: del } = e.target.dataset;
-    if (del) {
-      if (confirm('刪除這筆部位？（不會計入已實現損益）')) {
-        commit({ ...state, positions: state.positions.filter((p) => p.id !== del) });
-      }
-    } else if (close) {
-      openCloseDialog(close);
-    }
-  });
-
-  const dialog = $('#close-dialog');
-  dialog.querySelector('[data-close-dialog]').addEventListener('click', () => dialog.close());
-  $('#close-form').addEventListener('submit', (e) => {
-    const f = e.target;
-    try {
-      commit(closePosition(state, closingId, Number(f.qty.value), Number(f.price.value), f.date.value));
-    } catch (err) {
-      e.preventDefault();
-      alert(err.message);
-    }
-  });
-
-  $('#equity-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const f = e.target;
-    const equity = f.equity.value === '' ? computeSummary(state).equity : Number(f.equity.value);
-    if (!f.date.value || !Number.isFinite(equity)) return;
-    commit({ ...state, equityHistory: upsertEquity(state.equityHistory, f.date.value, Math.round(equity)) });
-    f.equity.value = '';
-  });
-
-  $('#equity-body').addEventListener('click', (e) => {
-    const date = e.target.dataset.deleteEquity;
-    if (date) commit({ ...state, equityHistory: state.equityHistory.filter((h) => h.date !== date) });
-  });
+function bindSettings() {
+  const msg = (text) => setText('settings-msg', text);
+  const apply = (settings, text) => {
+    state = store.normalize({ ...state, settings });
+    persist();
+    renderAll();
+    msg(text);
+  };
 
   $('#settings-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const f = e.target;
     const margins = {};
-    const feePerSide = {};
     for (const code of CONTRACT_CODES) {
-      const initial = Number(f[`initial-${code}`].value);
-      const maintenance = Number(f[`maintenance-${code}`].value);
-      if (!(initial > 0 && maintenance > 0)) return;
-      if (maintenance > initial) {
-        alert(`${CONTRACTS[code].name}：維持保證金不應高於原始保證金`);
+      const m = { initial: Number(f[`initial-${code}`].value), maintenance: Number(f[`maintenance-${code}`].value) };
+      if (!isValidMargin(m)) {
+        msg(`${CONTRACTS[code].short}：保證金需為正數，且維持保證金不可高於原始保證金。`);
         return;
       }
-      margins[code] = { initial, maintenance };
-      feePerSide[code] = Math.max(0, Number(f[`fee-${code}`].value) || 0);
+      margins[code] = m;
     }
-    const settings = {
-      margins,
-      feePerSide,
-      marginDate: f.marginDate.value,
-      taxRate: Number(f.taxRate.value) / 100000,
-      liquidationRatio: Number(f.liquidationRatio.value) / 100,
-    };
-    // 交給 normalize 擋掉不合法數值
-    replaceState(store.normalize({ ...state, settings }));
+    const ratio = Number(f.liquidationRatio.value) / 100;
+    if (!isValidRatio(ratio)) {
+      msg('代沖銷門檻需介於 0% 到 100% 之間。');
+      return;
+    }
+    apply({ ...state.settings, margins, marginDate: f.marginDate.value, liquidationRatio: ratio }, '已儲存。');
   });
 
   $('#reset-settings').addEventListener('click', () => {
-    if (!confirm('把保證金、手續費、稅率與代沖銷門檻還原為預設值？')) return;
-    replaceState({ ...state, settings: store.defaultSettings() });
-  });
-
-  $('#export-btn').addEventListener('click', () => {
-    const blob = new Blob([store.exportJson(state)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `twdashboard-${today()}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  });
-
-  $('#import-input').addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
-    try {
-      const next = store.importJson(await file.text());
-      if (!confirm('匯入會覆蓋目前所有資料，確定？')) return;
-      replaceState(next);
-    } catch {
-      alert('檔案不是有效的 JSON');
-    }
-  });
-
-  $('#clear-btn').addEventListener('click', () => {
-    if (!confirm('清除所有部位、紀錄與設定？此動作無法復原，建議先匯出 JSON。')) return;
-    replaceState(store.defaultState());
+    apply({ ...store.defaultSettings(), colorScheme: state.settings.colorScheme }, '已還原為預設值。');
   });
 }
 
-function openCloseDialog(id) {
-  const pos = state.positions.find((p) => p.id === id);
-  if (!pos) return;
-  closingId = id;
-  const f = $('#close-form');
-  $('#close-desc').textContent = `${CONTRACTS[pos.contract].name} ${sideLabel(pos.side)} ${pos.qty} 口，成本 ${money(pos.entry)}`;
-  f.qty.max = pos.qty;
-  f.qty.value = pos.qty;
-  f.price.value = pos.price;
-  f.date.value = today();
-  $('#close-dialog').showModal();
+// ---------- 漲跌配色與分頁 ----------
+
+function applyColorScheme() {
+  document.documentElement.dataset.colors = state.settings.colorScheme;
+  for (const b of $$('[data-colors]')) b.setAttribute('aria-pressed', String(b.dataset.colors === state.settings.colorScheme));
 }
 
-// 視窗寬度改變時重畫權益曲線，讓座標文字維持原始大小
-let resizeTimer;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(renderEquity, 150);
+function bindColorToggle() {
+  for (const b of $$('button[data-colors]')) {
+    b.addEventListener('click', () => {
+      state = { ...state, settings: { ...state.settings, colorScheme: b.dataset.colors } };
+      persist();
+      applyColorScheme();
+    });
+  }
+}
+
+const PAGES = ['calc', 'grid', 'rules'];
+
+function route() {
+  const hash = location.hash.slice(1);
+  const page = PAGES.includes(hash) ? hash : 'calc';
+  for (const p of $$('[data-page]')) p.hidden = p.dataset.page !== page;
+  for (const a of $$('[data-tab]')) {
+    if (a.dataset.tab === page) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  }
+}
+
+// ---------- 啟動 ----------
+
+/** 依目前 state 重繪所有畫面（設定表單會被覆寫，只在整份取代設定時呼叫） */
+function renderAll() {
+  renderSettings();
+  renderRules();
+  renderCalc();
+  renderGrid();
+}
+
+for (const select of $$('[data-contract-select]')) {
+  for (const code of CONTRACT_CODES) select.add(new Option(CONTRACTS[code].name, code));
+}
+bindForm('calc');
+bindForm('grid');
+bindCalcExtras();
+bindSettings();
+bindColorToggle();
+syncForm('calc');
+syncForm('grid');
+applyColorScheme();
+renderAll();
+route();
+window.addEventListener('hashchange', () => {
+  route();
+  window.scrollTo(0, 0);
 });
-
-fillContractSelects();
-$('#equity-form').date.value = today();
-bindEvents();
-render();
-renderSettings();
+refreshQuote();

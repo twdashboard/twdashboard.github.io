@@ -1,0 +1,66 @@
+name: deploy
+
+# 交易時段定時抓期交所行情寫成 quote.json，連同網站一起部署到 GitHub Pages（不 commit 回 repo）。
+# GitHub 排程常延後 10–30 分鐘，行情僅供參考。公開 repo 連續 60 天沒有 commit 時排程會被自動停用。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # 臺灣時間 = UTC+8
+    - cron: '*/10 0-5 * * 1-5'   # 日盤 08:45–13:45
+    - cron: '*/10 7-20 * * 1-5'  # 夜盤 15:00–04:59
+    - cron: '0 21 * * 1-5'       # 夜盤收盤 05:00
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: 測試
+        run: |
+          shopt -s globstar nullglob
+          files=(tests/**/*.test.mjs)
+          if [ ${#files[@]} -eq 0 ]; then echo "::error::找不到任何測試檔"; exit 1; fi
+          node --test "${files[@]}"
+      - name: 組裝網站
+        run: |
+          mkdir _site
+          cp -r index.html css js LICENSE _site/
+      - name: 抓取行情
+        id: quote
+        continue-on-error: true
+        run: node scripts/fetch-quote.mjs _site/quote.json
+      - name: 行情抓取失敗時沿用線上舊檔
+        if: steps.quote.outcome == 'failure' && hashFiles('_site/quote.json') == ''
+        run: |
+          echo "::warning::本次行情抓取失敗，沿用線上舊的 quote.json（前端會顯示資料時間）"
+          curl -fsS --max-time 15 https://twdashboard.github.io/quote.json -o _site/quote.json || echo "::warning::線上也沒有舊行情檔"
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

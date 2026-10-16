@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # 自動升級 workflow 中釘選 SHA 的 actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
