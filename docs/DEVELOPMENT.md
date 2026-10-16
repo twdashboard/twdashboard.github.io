@@ -66,8 +66,10 @@ localStorage key `twdashboard.state.v2`（`version: 2`）。v1 不相容、不�
 - 期交所 MIS API（`mis.taifex.com.tw/futures/api/getQuoteList`）不允許瀏覽器跨域，由 `deploy.yml` 排程執行 `scripts/fetch-quote.mjs _site/quote.json`，隨網站部署，不 commit 回 repo。
 - 排程 UTC cron：`*/10 0-5`、`*/10 7-20`、`0 21`（週一至五）；push main 與 `workflow_dispatch` 也會跑。
 - 近月以月份碼 A–L 加年份末碼自行算到期年月排序，不依賴 API 順序（注意跨十年）。
+- 日夜盤：MIS `MarketType '0'` 為日盤、`'1'` 為夜盤（代號尾碼 `-M`，如 `TMFJ6-M`；月契約正規式 `-[FM]$`）。`sessionOrder(now)` 依臺灣時間決定順序：08:45–14:59 先抓日盤，其餘先抓夜盤；優先盤別失敗（無價格、找不到近月等）改抓另一盤別並輸出 warning。
 - 單一商品失敗仍寫其他商品；全部失敗時沿用線上舊 `quote.json` 並輸出 warning。
 - 限制：排程延遲 10–30 分鐘；runner 在海外，可能被期交所擋（尚待驗證）；公開 repo 60 天無 commit 排程會被停用。
+- 限制：新 repo 推上 workflow 後約 4 小時內排程一次都沒觸發（2026-10-16 實測，僅 push 那次有跑）；GitHub schedule 在新 repo／低活動 repo 可能延遲很久或被略過，必要時手動 `gh workflow run deploy.yml`。
 
 ## 測試
 
@@ -76,7 +78,7 @@ node --test 'tests/**/*.test.mjs'
 ```
 
 - Node 22 內建 test runner；`node --test tests/` 在 Node 22 無法執行。
-- 122 個案例：calc 55、store 28、validate 7、quote 19、fetch-quote 13。
+- 125 個案例：calc 55、store 28、validate 7、quote 19、fetch-quote 16。
 - `app.js`、`gauge.js` 以 headless Chromium 手動 smoke test。
 - CI：`deploy.yml`（push main／排程／手動，測試通過才部署）、`test.yml`（PR）。
 

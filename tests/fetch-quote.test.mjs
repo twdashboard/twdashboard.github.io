@@ -1,11 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { expiryKey, pickNearMonth } from '../scripts/fetch-quote.mjs';
+import { expiryKey, pickNearMonth, sessionOrder } from '../scripts/fetch-quote.mjs';
 
 const d = (s) => new Date(`${s}T00:00:00Z`);
 
 describe('expiryKey', () => {
   test('TXFJ6-F 在 2026 → 202610', () => assert.equal(expiryKey('TXFJ6-F', d('2026-10-16')), 202610));
+  test('夜盤代號 TMFJ6-M 同樣解析為 202610', () => assert.equal(expiryKey('TMFJ6-M', d('2026-10-16')), 202610));
   test('月份碼 A=1、L=12', () => {
     assert.equal(expiryKey('TMFA6-F', d('2026-01-05')), 202601);
     assert.equal(expiryKey('MXFL6-F', d('2026-01-05')), 202612);
@@ -66,5 +67,18 @@ describe('pickNearMonth', () => {
     const copy = list.map((x) => x.n);
     pickNearMonth(list, now);
     assert.deepEqual(list.map((x) => x.n), copy);
+  });
+});
+
+describe('sessionOrder', () => {
+  // 參數為臺灣時間
+  const tw = (hm) => new Date(`2026-10-16T${hm}:00+08:00`);
+  test('08:45–14:59 先日盤', () => {
+    for (const hm of ['08:45', '12:00', '13:45', '14:59']) assert.deepEqual(sessionOrder(tw(hm)), ['0', '1'], hm);
+  });
+  test('15:00 起到隔日 08:44 先夜盤', () => {
+    for (const hm of ['15:00', '16:15', '23:59', '00:00', '04:59', '05:00', '08:44']) {
+      assert.deepEqual(sessionOrder(tw(hm)), ['1', '0'], hm);
+    }
   });
 });

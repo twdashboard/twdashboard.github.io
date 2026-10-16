@@ -270,6 +270,12 @@ function renderCalc() {
   const m = positionMetrics(c, state.settings);
   setText('calc-contract-info',
     `原始保證金 ${money(margins[c.contract].initial)} · 維持 ${money(margins[c.contract].maintenance)} · 乘數 ${m.multiplier}`);
+  // 快捷鈕的選中狀態由目前數值推得：手動輸入剛好等於某個快捷值時也會亮起，改了口數後保證金倍數不再相符就熄滅
+  for (const b of $$('[data-qty]')) b.setAttribute('aria-pressed', String(Number(b.dataset.qty) === c.qty));
+  for (const b of $$('[data-deposit-mult]')) {
+    const target = Number(b.dataset.depositMult) * margins[c.contract].initial * c.qty;
+    b.setAttribute('aria-pressed', String(target === c.deposit));
+  }
   renderLeverage(c, m);
   renderRisk(c, m);
   renderAdvice(c, m);

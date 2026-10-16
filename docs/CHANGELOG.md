@@ -2,6 +2,26 @@
 
 格式依循 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 
+## [0.2.1] - 2026-10-16
+
+修正夜盤時段行情停在日盤收盤價，以及試算頁快捷設定按鈕不顯示選中狀態的問題。
+
+### 修正
+
+- `scripts/fetch-quote.mjs` 寫死 MIS `MarketType: '0'`（日盤），夜盤時段（15:00–05:00）抓到的永遠是日盤 13:45 收盤價，網頁顯示的行情時間停在日盤。
+- 試算頁「保證金快捷設定」（1／3／5 倍）與「口數快捷設定」（1／2／5／10 口）按鈕點了不會顯示選中狀態：CSS 已有 `.presets button[aria-pressed="true"]` 樣式，但 `js/app.js` 只對波動幅度按鈕設 `aria-pressed`。改在 `renderCalc` 依目前數值推得選中狀態：口數等於按鈕值即亮；存入保證金等於 N × 原始保證金 × 口數即亮。因此手動輸入剛好相符時也會亮，改了口數而保證金沒跟著改時倍數鈕會熄滅（表示保證金已不是該倍數）。修改檔案：`js/app.js`。以 headless Chromium 驗證。
+
+### 變更
+
+- MIS `MarketType '1'` 為夜盤，代號尾碼為 `-M`（如 `TMFJ6-M`）。月契約正規式由 `-F$` 改為 `-[FM]$`。
+- 新增純函式 `sessionOrder(now)`：依臺灣時間 08:45–14:59 先抓日盤、其餘先抓夜盤。優先盤別失敗（無價格、找不到近月等）時改抓另一盤別並輸出 warning。
+- 測試新增 3 個案例（`-M` 代號解析、`sessionOrder` 日盤時段、夜盤時段），總數 122 → 125，fetch-quote 13 → 16。
+- 修改檔案：`scripts/fetch-quote.mjs`、`tests/fetch-quote.test.mjs`。
+
+### 已知限制
+
+- 新 repo 推上 workflow 後約 4 小時內 GitHub 排程一次都沒觸發（2026-10-16 實測，僅 push 那次有跑）。GitHub schedule 在新 repo／低活動 repo 可能延遲很久或被略過；必要時手動 `gh workflow run deploy.yml`。
+
 ## [0.2.0] - 2026-10-16
 
 改版為單一部位爆倉價格試算器。v0.1.0 做成多部位帳戶管理儀表盤，不符合需求；本版以「從能扛多大的波動反推該存多少保證金」為核心，改為手機 App 風格。
