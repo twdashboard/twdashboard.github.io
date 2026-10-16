@@ -1,0 +1,229 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #1a1d23;
+  --muted: #5f6673;
+  --border: #dfe3e8;
+  --accent: #1f4fd1;
+  --accent-text: #ffffff;
+  /* 台股慣例：紅漲綠跌 */
+  --up: #c4291c;
+  --down: #12805c;
+  --ok-bg: #e6f4ec;
+  --ok-fg: #12643f;
+  --warn-bg: #fff3d6;
+  --warn-fg: #8a5a00;
+  --danger-bg: #fde4e1;
+  --danger-fg: #a3190d;
+  --flat-bg: #eceef1;
+  --flat-fg: #4b5260;
+  --radius: 10px;
+  --font: system-ui, -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111318;
+    --surface: #1a1d24;
+    --text: #e7e9ee;
+    --muted: #9aa1ad;
+    --border: #2d323c;
+    --accent: #6d93ff;
+    --accent-text: #0b0d12;
+    --up: #ff6b5e;
+    --down: #3fcf8e;
+    --ok-bg: #12301f;
+    --ok-fg: #6fe0a6;
+    --warn-bg: #3a2c08;
+    --warn-fg: #ffcf5c;
+    --danger-bg: #401512;
+    --danger-fg: #ff8a7f;
+    --flat-bg: #262a33;
+    --flat-fg: #b2b8c3;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a { color: var(--accent); }
+
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.topbar-inner { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 56px; }
+h1 { font-size: 1.15rem; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0 0 12px; }
+
+main { padding-top: 16px; padding-bottom: 32px; }
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.muted { color: var(--muted); font-size: 0.9rem; }
+
+.alert {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+}
+
+.kpis, .stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+.stats { margin-bottom: 12px; }
+
+.kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.kpi-label { color: var(--muted); font-size: 0.85rem; }
+.kpi-value { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi-note { color: var(--muted); font-size: 0.8rem; }
+
+/* .kpi-value 繼承 .kpi 的顏色；label、note 自行指定 muted */
+.up { color: var(--up); }
+.down { color: var(--down); }
+.kpi.warn { color: var(--warn-fg); }
+
+/* 帳戶狀態色只定義一次，徽章、標籤、KPI 共用 */
+.status-flat { --s-bg: var(--flat-bg); --s-fg: var(--flat-fg); }
+.status-ok { --s-bg: var(--ok-bg); --s-fg: var(--ok-fg); }
+.status-marginCall { --s-bg: var(--warn-bg); --s-fg: var(--warn-fg); }
+.status-liquidation { --s-bg: var(--danger-bg); --s-fg: var(--danger-fg); }
+.kpi[class*="status-"] { color: var(--s-fg); }
+
+.badge, .pill {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--s-bg);
+  color: var(--s-fg);
+}
+.pill { padding: 1px 10px; font-size: 0.8rem; }
+
+.side-long { color: var(--up); font-weight: 600; }
+.side-short { color: var(--down); font-weight: 600; }
+
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+.num { text-align: right; }
+td.actions { text-align: right; }
+
+.row-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+  margin-top: 12px;
+}
+label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+
+input, select, button, .file-btn {
+  font: inherit;
+  font-size: 0.95rem;
+  border-radius: 8px;
+  min-height: 38px;
+}
+input, select {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 10px;
+  width: 140px;
+  max-width: 100%;
+}
+td input { width: 120px; text-align: right; }
+input.inline-price { width: 96px; min-height: 32px; padding: 4px 8px; }
+input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+button, .file-btn {
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: var(--accent-text);
+  padding: 6px 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+button.secondary, .file-btn.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+button.danger { background: var(--danger-bg); color: var(--danger-fg); }
+button.small { min-height: 30px; padding: 2px 10px; font-size: 0.85rem; }
+.file-btn { flex-direction: row; align-items: center; justify-content: center; position: relative; }
+/* 視覺隱藏但保留在 tab 順序與無障礙樹中 */
+.file-btn input { position: absolute; width: 1px; height: 1px; opacity: 0; min-height: 0; padding: 0; }
+.file-btn:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+details { margin-top: 12px; }
+summary { cursor: pointer; color: var(--muted); }
+
+.chart { margin-top: 4px; }
+.equity-chart { width: 100%; height: auto; display: block; }
+.equity-chart .grid { stroke: var(--border); stroke-width: 1; }
+.equity-chart .axis { fill: var(--muted); font-size: 11px; }
+.equity-chart .line { fill: none; stroke: var(--accent); stroke-width: 2; }
+.equity-chart .dot { fill: var(--accent); }
+.equity-chart .dot.peak { fill: var(--up); }
+.equity-chart .dot.trough { fill: var(--down); }
+
+dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 20px;
+  width: min(360px, calc(100vw - 32px));
+}
+dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+dialog label { margin-top: 10px; }
+dialog input { width: 100%; }
+
+.disclaimer { color: var(--muted); font-size: 0.85rem; margin-top: 24px; }
+
+@media (max-width: 560px) {
+  .kpis, .stats { grid-template-columns: 1fr 1fr; }
+  .kpi-value { font-size: 1.1rem; }
+  .row-form label { flex: 1 1 140px; }
+  .row-form input, .row-form select { width: 100%; }
+  /* iOS Safari 對小於 16px 的輸入框會在聚焦時自動放大 */
+  input, select { font-size: 16px; }
+}

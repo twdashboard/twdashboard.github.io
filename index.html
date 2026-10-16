@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>台指期風控儀表盤</title>
+  <meta name="description" content="臺股期貨（大台、小台、微台）保證金、風險指標、曝險槓桿、壓力測試與回撤試算。資料只存在你的瀏覽器。">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23b42318'/%3E%3Cpath d='M6 22l6-7 5 4 9-11' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <h1>台指期風控儀表盤</h1>
+      <span id="status-badge" class="badge" role="status"></span>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p id="storage-warning" class="alert" hidden>瀏覽器無法儲存資料（可能是隱私模式），關閉頁面後輸入內容會遺失。請用「匯出 JSON」備份。</p>
+
+    <section aria-labelledby="kpi-title">
+      <h2 id="kpi-title" class="sr-only">風控摘要</h2>
+      <div id="kpis" class="kpis"></div>
+    </section>
+
+    <section class="card" aria-labelledby="account-title">
+      <h2 id="account-title">帳戶與價格</h2>
+      <form id="account-form" class="row-form">
+        <label>帳戶餘額（不含未實現損益）
+          <input name="balance" type="number" step="1" inputmode="numeric" required>
+        </label>
+        <button type="submit">更新餘額</button>
+      </form>
+      <form id="price-form" class="row-form">
+        <label>商品
+          <select name="contract">
+            <option value="ALL">全部部位</option>
+          </select>
+        </label>
+        <label>現價（指數點）
+          <input name="price" type="number" step="1" min="1" inputmode="numeric" required>
+        </label>
+        <button type="submit">套用現價</button>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="positions-title">
+      <h2 id="positions-title">持倉</h2>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>商品</th><th>方向</th><th class="num">口數</th><th class="num">成本</th><th class="num">現價</th><th class="num">未實現損益</th><th class="num">原始保證金</th><th></th></tr>
+          </thead>
+          <tbody id="positions-body"></tbody>
+        </table>
+      </div>
+      <form id="position-form" class="row-form">
+        <label>商品 <select name="contract"></select></label>
+        <label>方向
+          <select name="side"><option value="long">多</option><option value="short">空</option></select>
+        </label>
+        <label>口數 <input name="qty" type="number" min="1" step="1" required></label>
+        <label>成本 <input name="entry" type="number" min="1" step="1" required></label>
+        <label>現價 <input name="price" type="number" min="1" step="1" placeholder="同成本"></label>
+        <button type="submit">新增部位</button>
+      </form>
+    </section>
+
+    <section class="card" aria-labelledby="stress-title">
+      <h2 id="stress-title">情境壓力測試</h2>
+      <p class="muted">指數同步變動時的權益數與風險指標；保證金依口數計，不隨價格變動。±10% 為漲跌停。</p>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>指數變動</th><th class="num">損益</th><th class="num">權益數</th><th class="num">風險指標</th><th>狀態</th></tr></thead>
+          <tbody id="stress-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="equity-title">
+      <h2 id="equity-title">權益曲線與回撤</h2>
+      <div id="drawdown-stats" class="stats"></div>
+      <div id="equity-chart" class="chart"></div>
+      <form id="equity-form" class="row-form">
+        <label>日期 <input name="date" type="date" required></label>
+        <label>權益數 <input name="equity" type="number" step="1" placeholder="留空＝目前權益數"></label>
+        <button type="submit">記錄權益</button>
+      </form>
+      <details>
+        <summary>權益紀錄明細</summary>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>日期</th><th class="num">權益數</th><th></th></tr></thead>
+            <tbody id="equity-body"></tbody>
+          </table>
+        </div>
+      </details>
+    </section>
+
+    <section class="card" aria-labelledby="trades-title">
+      <h2 id="trades-title">平倉紀錄</h2>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>日期</th><th>商品</th><th>方向</th><th class="num">口數</th><th class="num">成本</th><th class="num">平倉價</th><th class="num">毛損益</th><th class="num">費稅</th><th class="num">淨損益</th></tr></thead>
+          <tbody id="trades-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="settings-title">
+      <h2 id="settings-title">設定</h2>
+      <form id="settings-form">
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>商品</th><th class="num">原始保證金</th><th class="num">維持保證金</th><th class="num">手續費／口／邊</th></tr></thead>
+            <tbody id="settings-body"></tbody>
+          </table>
+        </div>
+        <div class="row-form">
+          <label>保證金資料日期 <input name="marginDate" type="date" required></label>
+          <label>期交稅率（十萬分之）<input name="taxRate" type="number" min="0" step="0.1" required></label>
+          <label>代沖銷風險指標（%）<input name="liquidationRatio" type="number" min="0" max="99" step="1" required></label>
+          <button type="submit">儲存設定</button>
+          <button type="button" id="reset-settings" class="secondary">還原預設值</button>
+        </div>
+      </form>
+      <p class="muted">保證金預設值取自<a href="https://www.taifex.com.tw/cht/5/indexMarging" target="_blank" rel="noopener">臺灣期貨交易所</a>，期交所會不定期調整，請自行核對；你的期貨商可能收取更高的保證金。</p>
+      <div class="row-form">
+        <button type="button" id="export-btn" class="secondary">匯出 JSON</button>
+        <label class="file-btn secondary">匯入 JSON <input id="import-input" type="file" accept="application/json,.json"></label>
+        <button type="button" id="clear-btn" class="danger">清除所有資料</button>
+      </div>
+    </section>
+
+    <footer class="disclaimer">
+      <p>本工具僅供試算與教育用途，不構成投資建議。計算方式採保守簡化（不計跨月價差保證金減收），數字可能與期貨商不同，實際以期貨商通知為準。所有資料只存在你的瀏覽器，不會上傳。</p>
+      <p><a href="https://github.com/twdashboard/twdashboard.github.io" target="_blank" rel="noopener">GitHub 原始碼</a> · MIT License</p>
+    </footer>
+  </main>
+
+  <dialog id="close-dialog">
+    <form id="close-form" method="dialog">
+      <h2>平倉</h2>
+      <p id="close-desc"></p>
+      <label>口數 <input name="qty" type="number" min="1" step="1" required></label>
+      <label>平倉價 <input name="price" type="number" min="1" step="1" required></label>
+      <label>日期 <input name="date" type="date" required></label>
+      <div class="row-form">
+        <button type="submit" value="confirm">確認平倉</button>
+        <button type="button" class="secondary" data-close-dialog>取消</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
