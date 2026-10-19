@@ -1,7 +1,8 @@
 name: deploy
 
 # 交易時段定時抓期交所行情寫成 quote.json，連同網站一起部署到 GitHub Pages（不 commit 回 repo）。
-# GitHub 排程常延後 10–30 分鐘，行情僅供參考。公開 repo 連續 60 天沒有 commit 時排程會被自動停用。
+# 主要由外部 cron-job.org 每 10 分鐘呼叫 workflow_dispatch 觸發；GitHub 排程在低活動 repo 會嚴重延後或略過，只當備援。
+# 公開 repo 連續 60 天沒有 commit 時排程會被自動停用（workflow_dispatch 不受影響）。
 on:
   push:
     branches: [main]

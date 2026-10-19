@@ -4,7 +4,7 @@
 
 - 線上使用：https://twdashboard.github.io/
 - 支援商品：大台 TX（每點 200 元）、小台 MTX（每點 50 元）、微台 TMF（每點 10 元）
-- 純靜態 HTML/CSS/JS（ES modules），零相依、不用建置；行情由 GitHub Actions 定時抓取，瀏覽器不對外連線
+- 純靜態 HTML/CSS/JS（ES modules），零相依、不用建置；行情由 GitHub Actions 抓取（外部 cron 每 10 分鐘觸發），瀏覽器不對外連線
 
 ## 設計理念
 
@@ -70,14 +70,17 @@
 
 ## 行情
 
-- 期交所 MIS API 不允許瀏覽器跨域，所以由 GitHub Actions（`deploy.yml`）在交易時段每 10 分鐘執行 `scripts/fetch-quote.mjs`，抓三商品近月報價寫成 `quote.json`，連同網站部署到 GitHub Pages（不 commit 回 repo）。
+- 期交所 MIS API 不允許瀏覽器跨域，所以由 GitHub Actions（`deploy.yml`）執行 `scripts/fetch-quote.mjs`，抓三商品近月報價寫成 `quote.json`，連同網站部署到 GitHub Pages（不 commit 回 repo）。
+- 更新機制：外部 cron-job.org 每 10 分鐘呼叫 GitHub API `workflow_dispatch` 觸發 `deploy.yml`；GitHub 內建 `schedule` 在低活動 repo 會被嚴重節流，僅保留作備援。
+- 夜盤跨午夜的成交時間已修正為隔天日期（MIS 夜盤 `CDate` 是開盤日）。
 - 近月由月份碼（A–L）加年份末碼自行換算到期年月後排序，不依賴 API 回傳順序。
 - 單一商品失敗仍會寫入其他商品；全部失敗時沿用線上舊的 `quote.json` 並輸出 warning。
 - 前端顯示資料時間，超過 30 分鐘標示「N 分鐘前」。
 
 限制：
 
-- GitHub 排程實際延遲 10–30 分鐘，行情只能當參考價，請以看盤軟體為準。
+- 行情約延遲 10–15 分鐘（觸發後抓取加部署約 1–2 分鐘），不是即時報價，請以看盤軟體為準。
+- 依賴外部 cron 服務與有期限的 GitHub token；token 失效則行情停止更新（僅剩 GitHub 排程備援）。
 - GitHub runner 在海外，期交所可能擋海外 IP（尚待實際驗證）。
 - 公開 repo 連續 60 天沒有 commit，排程會被 GitHub 自動停用。
 
@@ -102,7 +105,7 @@ node --test 'tests/**/*.test.mjs'
 
 - 不可用 `file://` 開啟，ES modules 會被 CORS 擋住。
 - 測試使用 Node 內建 test runner（Node 22）；`node --test tests/` 在 Node 22 無法執行，請用上述 glob 寫法。
-- 目前 122 個案例（calc 55、store 28、validate 7、quote 19、fetch-quote 13）。`app.js`、`gauge.js` 涉及 DOM，以 headless Chromium 手動 smoke test 驗證。
+- 目前 129 個案例（calc 55、store 28、validate 7、quote 19、fetch-quote 20）。`app.js`、`gauge.js` 涉及 DOM，以 headless Chromium 手動 smoke test 驗證。
 - 慣例與架構細節見 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)，變更紀錄見 [docs/CHANGELOG.md](docs/CHANGELOG.md)。
 
 ## 專案結構

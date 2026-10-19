@@ -2,6 +2,31 @@
 
 格式依循 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 
+## [0.2.2] - 2026-10-19
+
+修正夜盤行情時間少算一天，並改以外部 cron 觸發行情更新（GitHub schedule 嚴重節流）。
+
+### 修正
+
+- `scripts/fetch-quote.mjs` 的 `toIsoTime(date, time, marketType)`：MIS 夜盤的 `CDate` 是開盤日，跨午夜（`CTime` < 150000）的成交實際發生在隔天，原本直接拼接導致時間少一天。例：週五夜盤於週六 04:59:59 收盤，被顯示成週五 04:59，網頁顯示「3 天前」而非「2 天前」。現在夜盤 15:00 前的時間日期 +1 天（含跨月）。2026-10-19 直接查 MIS 確認 `TMFJ6-M` 的 `CDate=20261016`、`CTime=045959`。`toIsoTime` 改為 export 以便測試。
+
+### 變更
+
+- 行情更新改由外部 cron-job.org 每 10 分鐘呼叫 GitHub API `workflow_dispatch` 觸發 `deploy.yml`（`POST /repos/twdashboard/twdashboard.github.io/actions/workflows/deploy.yml/dispatches`，body `{"ref":"main"}`）。使用 fine-grained PAT：僅限此 repo、Actions: Read and write、設有到期日，存在 cron-job.org，須定期更換。GitHub `schedule` 保留作備援。預期延遲約 10–15 分鐘（觸發後抓取加部署約 1–2 分鐘）。
+- `index.html` 頁尾改為「行情每 10 分鐘自動抓取一次，約延遲 10–15 分鐘，不是即時報價，請以看盤軟體為準。」；`deploy.yml` 註解同步。
+- 測試新增 4 個 `toIsoTime` 案例，總數 125 → 129，fetch-quote 16 → 20（calc 55、store 28、validate 7、quote 19）。
+- 修改檔案：`scripts/fetch-quote.mjs`、`tests/fetch-quote.test.mjs`、`index.html`、`.github/workflows/deploy.yml`、`README.md`、`docs/DEVELOPMENT.md`。
+
+### 關鍵決策與原因
+
+1. 外部觸發取代 GitHub schedule：低活動 repo 的 schedule 被嚴重節流。2026-10-16（週五）排程間隔 1–3 小時；週六 07:11（台灣）後到週一 09:39 一次都沒跑，網頁行情停在三天前。
+2. 不做瀏覽器即時抓取：實測 MIS 對跨域 preflight 回 403、`text/plain` 請求回 415；Yahoo 台灣股市內部 API 無 `Access-Control-Allow-Origin`，也需代理，且有 Yahoo 服務條款與非公開介面的問題。即時行情需 Cloudflare Worker 代理；使用者接受 15 分鐘延遲故不採用，同時降低即時行情轉載的授權疑慮。
+
+### 已知限制
+
+- 依賴外部服務 cron-job.org 與 PAT；PAT 過期或被撤銷則行情停止更新（僅剩 GitHub schedule 備援），須在到期前更換。
+- 行情仍是延遲約 10–15 分鐘的參考價，不是即時報價。
+
 ## [0.2.1] - 2026-10-16
 
 修正夜盤時段行情停在日盤收盤價，以及試算頁快捷設定按鈕不顯示選中狀態的問題。

@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { expiryKey, pickNearMonth, sessionOrder } from '../scripts/fetch-quote.mjs';
+import { expiryKey, pickNearMonth, sessionOrder, toIsoTime } from '../scripts/fetch-quote.mjs';
 
 const d = (s) => new Date(`${s}T00:00:00Z`);
 
@@ -80,5 +80,26 @@ describe('sessionOrder', () => {
     for (const hm of ['15:00', '16:15', '23:59', '00:00', '04:59', '05:00', '08:44']) {
       assert.deepEqual(sessionOrder(tw(hm)), ['1', '0'], hm);
     }
+  });
+});
+
+describe('toIsoTime', () => {
+  test('日盤直接用 CDate', () => {
+    assert.equal(toIsoTime('20261019', '093937', '0'), '2026-10-19T09:39:37+08:00');
+  });
+
+  test('夜盤跨午夜的成交日期加一天（含跨月）', () => {
+    assert.equal(toIsoTime('20261016', '045959', '1'), '2026-10-17T04:59:59+08:00');
+    assert.equal(toIsoTime('20261031', '000000', '1'), '2026-11-01T00:00:00+08:00');
+  });
+
+  test('夜盤午夜前不調整', () => {
+    assert.equal(toIsoTime('20261016', '150000', '1'), '2026-10-16T15:00:00+08:00');
+    assert.equal(toIsoTime('20261016', '235959', '1'), '2026-10-16T23:59:59+08:00');
+  });
+
+  test('格式不符回 null', () => {
+    assert.equal(toIsoTime('', '093937', '0'), null);
+    assert.equal(toIsoTime('20261019', '', '1'), null);
   });
 });

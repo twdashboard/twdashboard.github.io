@@ -49,8 +49,13 @@ export function sessionOrder(now = new Date()) {
   return minutes >= 8 * 60 + 45 && minutes < 15 * 60 ? [DAY, NIGHT] : [NIGHT, DAY];
 }
 
-function toIsoTime(date, time) {
+/** MIS CDate＋CTime 轉 ISO 時間；夜盤 CDate 是開盤日，15:00 以前（跨午夜）的成交實際在隔天 */
+export function toIsoTime(date, time, marketType = DAY) {
   if (!/^\d{8}$/.test(date ?? '') || !/^\d{6}$/.test(time ?? '')) return null;
+  if (marketType === NIGHT && time < '150000') {
+    const d = new Date(Date.UTC(+date.slice(0, 4), +date.slice(4, 6) - 1, +date.slice(6, 8) + 1));
+    date = d.toISOString().slice(0, 10).replaceAll('-', '');
+  }
   return `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}+08:00`;
 }
 
@@ -71,7 +76,7 @@ async function fetchSession(cid, marketType) {
   const last = num(q.CLastPrice);
   const ref = num(q.CRefPrice);
   if (!last && !ref) throw new Error('無價格');
-  return { symbol: q.SymbolID, name: q.DispCName, last: last ?? ref, ref, time: toIsoTime(q.CDate, q.CTime) };
+  return { symbol: q.SymbolID, name: q.DispCName, last: last ?? ref, ref, time: toIsoTime(q.CDate, q.CTime, marketType) };
 }
 
 async function fetchNearMonth(cid) {
