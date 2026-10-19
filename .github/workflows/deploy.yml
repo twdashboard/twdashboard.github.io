@@ -58,7 +58,7 @@ jobs:
         run: |
           echo "::warning::本次保證金抓取失敗，沿用線上舊的 margins.json（前端無檔時沿用使用者原設定）"
           curl -fsS --max-time 15 https://twdashboard.github.io/margins.json -o _site/margins.json || echo "::warning::線上也沒有舊保證金檔"
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
 
