@@ -1,8 +1,9 @@
 // 介面層：分頁切換、讀取輸入、即時重算與渲染。所有風控判斷交給 calc.js。
 
-import { CONTRACTS, CONTRACT_CODES, BUFFER_ZONES, SHOCK_OPTIONS } from './contracts.js';
+import { CONTRACTS, CONTRACT_CODES, BUFFER_ZONES, SHOCK_OPTIONS, DEFAULT_MARGIN_DATE } from './contracts.js';
 import { positionMetrics, requiredDeposit, gridLadder, leverageForBuffer, GRID_STATUS } from './calc.js';
 import { loadQuote, quoteHintText } from './quote.js';
+import { loadOfficialMargins, reconcileMargins, followOfficial, sourceAfterEdit, cloneMargins, MARGIN_STATUS } from './margins.js';
 import { renderGauge } from './gauge.js';
 import { LIMITS, isValidMargin, isValidRatio } from './validate.js';
 import * as store from './store.js';
@@ -29,6 +30,8 @@ function h(tag, props = {}, ...children) {
 
 let state = store.load();
 let quote = null;
+let official = null;
+let marginStatus = MARGIN_STATUS.UNAVAILABLE;
 
 function persist() {
   $('#storage-warning').hidden = store.save(state);
@@ -268,8 +271,9 @@ function renderCalc() {
   const c = state.calc;
   const { margins } = state.settings;
   const m = positionMetrics(c, state.settings);
+  const source = state.settings.marginsSource === 'official' ? '期交所公告' : '自訂';
   setText('calc-contract-info',
-    `原始保證金 ${money(margins[c.contract].initial)} · 維持 ${money(margins[c.contract].maintenance)} · 乘數 ${m.multiplier}`);
+    `原始保證金 ${money(margins[c.contract].initial)} · 維持 ${money(margins[c.contract].maintenance)}（${source}） · 乘數 ${m.multiplier}`);
   // 快捷鈕的選中狀態由目前數值推得：手動輸入剛好等於某個快捷值時也會亮起，改了口數後保證金倍數不再相符就熄滅
   for (const b of $$('[data-qty]')) b.setAttribute('aria-pressed', String(Number(b.dataset.qty) === c.qty));
   for (const b of $$('[data-deposit-mult]')) {
@@ -387,13 +391,21 @@ function renderSettings() {
     marginInput(code, 'maintenance'))));
   const f = $('#settings-form');
   f.marginDate.value = s.marginDate;
+  // 跟隨官方時日期為期交所資料日，不可手動修改
+  f.marginDate.disabled = s.marginsSource === 'official';
+  setText('margin-source', s.marginsSource === 'official'
+    ? '跟隨期交所公告值，期交所調整時自動更新。改成其他數字並儲存即改為自訂。'
+    : '自訂保證金：期交所調整時只提示，不覆蓋你的設定。');
   f.liquidationRatio.value = +(s.liquidationRatio * 100).toFixed(2);
 }
 
 function bindSettings() {
   const msg = (text) => setText('settings-msg', text);
   const apply = (settings, text) => {
-    state = store.normalize({ ...state, settings });
+    const next = store.normalize({ ...state, settings });
+    const r = reconcileMargins(next.settings, official);
+    state = { ...next, settings: r.settings };
+    marginStatus = r.status;
     persist();
     renderAll();
     msg(text);
@@ -416,12 +428,57 @@ function bindSettings() {
       msg('代沖銷門檻需介於 0% 到 100% 之間。');
       return;
     }
-    apply({ ...state.settings, margins, marginDate: f.marginDate.value, liquidationRatio: ratio }, '已儲存。');
+    const marginsSource = sourceAfterEdit(state.settings, margins, official);
+    apply({ ...state.settings, margins, marginsSource, marginDate: f.marginDate.value, liquidationRatio: ratio }, '已儲存。');
   });
 
   $('#reset-settings').addEventListener('click', () => {
-    apply({ ...store.defaultSettings(), colorScheme: state.settings.colorScheme }, '已還原為預設值。');
+    const base = { ...store.defaultSettings(), colorScheme: state.settings.colorScheme };
+    apply(followOfficial(base, official, DEFAULT_MARGIN_DATE), '已還原為預設值。');
   });
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-margin-action]');
+    if (!b || !official) return;
+    if (b.dataset.marginAction === 'apply') {
+      apply(followOfficial(state.settings, official, DEFAULT_MARGIN_DATE), '已套用期交所公告保證金。');
+    } else {
+      apply({ ...state.settings, dismissedOfficial: cloneMargins(official.margins) }, '已保留你的保證金設定。');
+    }
+  });
+}
+
+// ---------- 期交所公告保證金 ----------
+
+function marginSummary(margins) {
+  return CONTRACT_CODES.map((code) =>
+    `${CONTRACTS[code].short} 原始 ${fmt0.format(margins[code].initial)}／維持 ${fmt0.format(margins[code].maintenance)}`).join('、');
+}
+
+function renderMarginNotice() {
+  let text = '';
+  if (marginStatus === MARGIN_STATUS.APPLIED) {
+    text = `保證金已依期交所 ${official.date} 資料更新：${marginSummary(official.margins)}。`;
+  } else if (marginStatus === MARGIN_STATUS.DIFFERS) {
+    text = `期交所 ${official.date} 公告保證金與你的設定不同：${marginSummary(official.margins)}。`;
+  }
+  for (const el of $$('[data-margin-notice]')) {
+    el.hidden = text === '';
+    $('[data-margin-notice-text]', el).textContent = text;
+    $('[data-margin-notice-actions]', el).hidden = marginStatus !== MARGIN_STATUS.DIFFERS;
+  }
+}
+
+async function refreshMargins() {
+  official = await loadOfficialMargins();
+  const r = reconcileMargins(state.settings, official);
+  marginStatus = r.status;
+  if (r.settings !== state.settings) {
+    state = { ...state, settings: r.settings };
+    persist();
+    renderAll();
+  }
+  renderMarginNotice();
 }
 
 // ---------- 漲跌配色與分頁 ----------
@@ -458,6 +515,7 @@ function route() {
 /** 依目前 state 重繪所有畫面（設定表單會被覆寫，只在整份取代設定時呼叫） */
 function renderAll() {
   renderSettings();
+  renderMarginNotice();
   renderRules();
   renderCalc();
   renderGrid();
@@ -481,3 +539,4 @@ window.addEventListener('hashchange', () => {
   window.scrollTo(0, 0);
 });
 refreshQuote();
+refreshMargins();

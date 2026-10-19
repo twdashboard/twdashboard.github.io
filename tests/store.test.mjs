@@ -23,7 +23,8 @@ describe('defaultState / defaultSettings', () => {
     s.margins.TX.initial = 0;
     assert.equal(defaultSettings().margins.TX.initial, 701000);
     assert.deepEqual(defaultSettings(), {
-      margins: DEFAULT_MARGINS, marginDate: '2026-08-12', liquidationRatio: 0.25, colorScheme: 'redUp',
+      margins: DEFAULT_MARGINS, marginDate: '2026-08-12', marginsSource: 'official', dismissedOfficial: null,
+      liquidationRatio: 0.25, colorScheme: 'redUp',
     });
   });
   test('defaultState 內容', () => {
@@ -157,6 +158,78 @@ describe('normalize', () => {
     assert.equal(s.calc.contract, 'TMF');
     assert.deepEqual(s.settings.margins, DEFAULT_MARGINS);
   });
+  test('marginsSource：合法值 official/custom 保留', () => {
+    for (const v of ['official', 'custom']) {
+      assert.equal(normalize({ settings: { marginsSource: v } }).settings.marginsSource, v);
+      const custom = { TX: { initial: 800000, maintenance: 600000 } };
+      assert.equal(normalize({ settings: { marginsSource: v, margins: custom } }).settings.marginsSource, v);
+    }
+  });
+  test('marginsSource：舊資料沒有此欄位，margins 等於內建值 → official', () => {
+    assert.equal(normalize({ settings: {} }).settings.marginsSource, 'official');
+    assert.equal(normalize({ settings: { margins: structuredClone(DEFAULT_MARGINS) } }).settings.marginsSource, 'official');
+  });
+  test('marginsSource：舊資料沒有此欄位，margins 與內建值不同 → custom', () => {
+    const s = normalize({ settings: { margins: { TMF: { initial: 40000, maintenance: 30000 } } } });
+    assert.equal(s.settings.marginsSource, 'custom');
+  });
+  test('marginsSource：不合法 margins 被換回內建值後推論為 official', () => {
+    const s = normalize({ settings: { margins: { TX: { initial: 1, maintenance: 2 } } } });
+    assert.deepEqual(s.settings.margins, DEFAULT_MARGINS);
+    assert.equal(s.settings.marginsSource, 'official');
+  });
+  test('marginsSource：非法值同樣依 margins 推論', () => {
+    const custom = { TX: { initial: 800000, maintenance: 600000 } };
+    for (const v of ['OFFICIAL', 'auto', '', null, 1, true, {}, ['official'], '__proto__']) {
+      assert.equal(normalize({ settings: { marginsSource: v } }).settings.marginsSource, 'official', String(v));
+      assert.equal(normalize({ settings: { marginsSource: v, margins: custom } }).settings.marginsSource, 'custom', String(v));
+    }
+  });
+  test('dismissedOfficial：完整合法表 → 深拷貝且只留三檔 initial/maintenance', () => {
+    const table = {
+      TX: { initial: 800000, maintenance: 614000, evil: 1 },
+      MTX: { initial: 200000, maintenance: 153500 },
+      TMF: { initial: 40000, maintenance: 30700 },
+      ZZ: { initial: 2, maintenance: 1 },
+    };
+    const s = normalize({ settings: { dismissedOfficial: table } });
+    assert.deepEqual(s.settings.dismissedOfficial, {
+      TX: { initial: 800000, maintenance: 614000 },
+      MTX: { initial: 200000, maintenance: 153500 },
+      TMF: { initial: 40000, maintenance: 30700 },
+    });
+    assert.notEqual(s.settings.dismissedOfficial, table);
+    assert.notEqual(s.settings.dismissedOfficial.TX, table.TX);
+    table.TX.initial = 1;
+    assert.equal(s.settings.dismissedOfficial.TX.initial, 800000);
+  });
+  test('dismissedOfficial：非完整或不合法 → null', () => {
+    const ok = structuredClone(DEFAULT_MARGINS);
+    const missing = structuredClone(DEFAULT_MARGINS);
+    delete missing.TMF;
+    const badOne = structuredClone(DEFAULT_MARGINS);
+    badOne.MTX = { initial: 1, maintenance: 2 };
+    const strOne = structuredClone(DEFAULT_MARGINS);
+    strOne.TX = { initial: '701000', maintenance: 538000 };
+    for (const v of [undefined, null, 0, 'x', true, [], {}, missing, badOne, strOne]) {
+      assert.equal(normalize({ settings: { dismissedOfficial: v } }).settings.dismissedOfficial, null, JSON.stringify(v));
+    }
+    assert.deepEqual(normalize({ settings: { dismissedOfficial: ok } }).settings.dismissedOfficial, DEFAULT_MARGINS);
+  });
+  test('dismissedOfficial 的 __proto__ 不會污染原型', () => {
+    const raw = JSON.parse('{"settings":{"dismissedOfficial":{"__proto__":{"polluted":1},"TX":{"initial":2,"maintenance":1},"MTX":{"initial":2,"maintenance":1},"TMF":{"initial":2,"maintenance":1}}}}');
+    const s = normalize(raw);
+    assert.equal(({}).polluted, undefined);
+    assert.equal(s.settings.dismissedOfficial.polluted, undefined);
+    assert.deepEqual(Object.keys(s.settings.dismissedOfficial).sort(), ['MTX', 'TMF', 'TX']);
+  });
+  test('settings 為非物件時 marginsSource/dismissedOfficial 用預設', () => {
+    for (const v of [null, 'x', 5]) {
+      const s = normalize({ settings: v });
+      assert.equal(s.settings.marginsSource, 'official');
+      assert.equal(s.settings.dismissedOfficial, null);
+    }
+  });
   test('calc/grid/settings 為非物件時用預設', () => {
     const s = normalize({ calc: 'x', grid: 5, settings: null });
     assert.deepEqual(s, defaultState());
@@ -230,6 +303,15 @@ describe('load / save（localStorage stub）', () => {
     delete globalThis.localStorage;
     assert.deepEqual(load(), defaultState());
     assert.equal(save(defaultState()), false);
+  });
+  test('save/load 往返保留 marginsSource 與 dismissedOfficial', () => {
+    stub(memory());
+    const s = defaultState();
+    s.settings.margins.TMF = { initial: 40000, maintenance: 30000 };
+    s.settings.marginsSource = 'custom';
+    s.settings.dismissedOfficial = structuredClone(DEFAULT_MARGINS);
+    assert.equal(save(s), true);
+    assert.deepEqual(load(), s);
   });
   test('setItem 丟例外 → save 回傳 false', () => {
     stub({ getItem: () => null, setItem() { throw new Error('QuotaExceededError'); } });

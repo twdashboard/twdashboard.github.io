@@ -2,6 +2,44 @@
 
 格式依循 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.1.0/)。
 
+## [0.3.0] - 2026-10-19
+
+保證金自動更新：部署時從期交所開放資料 API 抓保證金寫成 `margins.json`，前端據此自動套用或提示，不必再每次手動改內建預設值。
+
+### 新增
+
+- `scripts/fetch-margins.mjs`：抓 `https://openapi.taifex.com.tw/v1/IndexFuturesAndOptionsMargining`，商品名稱「完全相符」對應 臺股期貨→TX、小型臺指→MTX、微型臺指期貨→TMF（排除「客製化小型臺指期貨」）；`Date` 與保證金欄位須為字串，非字串（含數字）一律視為無效回 `null`。寫出 `{fetchedAt, source:'TAIFEX OpenAPI', date:'YYYY-MM-DD', margins:{TX|MTX|TMF:{initial,maintenance}}}`。失敗不寫檔。官方值與內建 `DEFAULT_MARGINS` 不同時輸出 `::warning::`，提醒手動更新內建值與 README（不自動 commit）。
+- `deploy.yml` 每次部署（含 cron-job.org 每 10 分鐘觸發）執行 `node scripts/fetch-margins.mjs _site/margins.json`（`continue-on-error`）；失敗且無新檔時從線上抓舊 `margins.json` 沿用，線上也沒有則只輸出 warning。`margins.json` 不 commit（已加 `.gitignore`）。
+- `js/margins.js`（新模組）：`sanitizeOfficial`、`loadOfficialMargins`、`reconcileMargins`（回傳 status：`unavailable`／`current`／`applied`／`differs`／`dismissed`）、`followOfficial`、`sourceAfterEdit`、`sameMargins`／`isMarginTable`／`cloneMargins`。
+- 資料模型 `settings` 新增 `marginsSource: 'official'|'custom'`、`dismissedOfficial: 完整三檔表|null`；schema 仍為 v2。舊資料沒有 `marginsSource` 時：`margins` 等於 `DEFAULT_MARGINS` 視為 `official`，否則 `custom`。
+- UI：`official` 模式官方值變動時自動套用，並顯示一次「保證金已依期交所 X 資料更新」；保證金日期欄位停用並顯示官方資料日。`custom` 模式顯示提示與「套用官方值」「保留我的設定」兩鈕。試算頁保證金說明列標示（期交所公告）或（自訂）。
+- CSS：`[hidden] { display: none !important; }`（`.button-row` 的 `display:flex` 會蓋掉 `hidden` 屬性）、`.alert p`、`.alert .button-row`。
+
+### 變更
+
+- 儲存設定表單：數字沒改沿用原來源；改了則等於官方值（官方不可用時比內建值）才算 `official`，否則 `custom`。
+- 「還原預設值」改為套用官方值。
+- 測試 129 → 195：calc 55、store 28 → 38、validate 7、quote 19、fetch-quote 20、新增 margins 39、fetch-margins 17。`app.js` 以 headless Chromium smoke test 驗四情境：新使用者自動套用、舊自訂使用者提示、保留後重載不再提示、套用後改回官方；`margins.json` 缺檔不提示。
+- 審查與測試後修正：`parseMargins` 對非字串 `Date`／保證金欄位改回 `null`（原本數字 `Date` 會丟 `TypeError`）。
+- 修改檔案：`js/margins.js`（新）、`js/store.js`、`js/app.js`、`index.html`、`css/style.css`、`scripts/fetch-margins.mjs`（新）、`.github/workflows/deploy.yml`、`.gitignore`、`tests/margins.test.mjs`（新）、`tests/fetch-margins.test.mjs`（新）、`tests/store.test.mjs`、`README.md`、`docs/DEVELOPMENT.md`。
+
+### 關鍵決策與原因
+
+1. 資料來源用期交所開放資料 API（可由 GitHub runner 抓、有結構化欄位），不爬網頁；商品名稱完全相符，避免「客製化小型臺指期貨」被誤認為小台。
+2. `margins.json` 視為不可信：`sanitizeOfficial` 要求三檔都合法，且各值落在 `DEFAULT_MARGINS` 的 0.3–3 倍才採用，否則整份丟棄、不混用來源，避免來源異常或被竄改時把風控門檻改成離譜數字。
+3. API 的 `Date` 是資料發布日，不是生效日，故只顯示「官方資料日」，不推算生效日。
+4. 使用者自訂的設定不被自動覆寫：`custom` 只提示；「保留」後同一組官方值（`dismissedOfficial`）不再提示，官方再變才提示。
+5. `margins.json` 載入失敗時，`official` 使用者沿用已存值，不退回內建值，避免保證金倒退成舊的預設值。
+6. 內建 `DEFAULT_MARGINS` 保留為備援與比對基準；不自動 commit，官方值不同時只用 CI warning 提醒人工更新。
+7. 不升 schema：新欄位由 `normalize` 補預設，舊資料可直接讀。
+
+### 已知限制
+
+- `official` 改為 `custom` 的那次儲存，日期沿用官方資料日（刻意不修）。
+- 試算頁按「套用」「保留」後，文字回饋寫在設定頁（刻意不修）。
+- 頁面載入瞬間編輯設定表單，可能被官方值套用覆寫（刻意不修）。
+- 保證金為期交所公告值，期貨商可能收更高；內建值與 README 保證金表仍需在 CI warning 時手動更新。
+
 ## [0.2.2] - 2026-10-19
 
 修正夜盤行情時間少算一天，並改以外部 cron 觸發行情更新（GitHub schedule 嚴重節流）。

@@ -66,7 +66,7 @@
 | MTX | 175,250 | 134,500 |
 | TMF | 35,050 | 26,900 |
 
-期交所會不定期調整，預設值需手動更新；你也可以在「③ 風控法規公式」頁自行修改。
+保證金會自動跟隨期交所：部署時從期交所開放資料 API 抓取寫成 `margins.json`（`scripts/fetch-margins.mjs`，不 commit），前端預設跟隨官方值，變動時自動套用並提示一次，日期顯示的是官方資料發布日。你也可以在「③ 風控法規公式」頁自行修改，改成自訂後官方值變動只會提示，可選「套用官方值」或「保留我的設定」；「還原預設值」會套用官方值。`margins.json` 抓不到或內容異常（不是三檔都合法、數值偏離內建值 0.3–3 倍）時沿用已存值或內建值。上表為內建備援值，官方值與之不同時由 CI warning 提醒手動更新。
 
 ## 行情
 
@@ -88,12 +88,12 @@
 
 - 不計手續費、期交稅、跨月價差保證金減收。
 - 期貨商可能收取高於期交所的保證金，風險指標算法也可能不同；實際追繳與代沖銷以你的期貨商為準。
-- 保證金預設值可能落後於期交所最新公告。
+- 內建保證金預設值可能落後於期交所最新公告；自動更新依賴 `margins.json`，抓取失敗時不會更新。
 - 本工具僅為試算輔助，不構成投資建議；使用者須自行承擔交易與依賴試算結果的風險。
 
 ## 隱私
 
-設定與輸入只存在你瀏覽器的 localStorage（key：`twdashboard.state.v2`），不會上傳。唯一的對外請求是讀取同網站的 `quote.json`（CSP `connect-src 'self'`）。v0.1.0 使用的 `v1` 資料格式不相容，舊資料不會遷移。
+設定與輸入只存在你瀏覽器的 localStorage（key：`twdashboard.state.v2`），不會上傳。唯一的對外請求是讀取同網站的 `quote.json` 與 `margins.json`（CSP `connect-src 'self'`）。v0.1.0 使用的 `v1` 資料格式不相容，舊資料不會遷移。
 
 ## 本機開發與測試
 
@@ -105,7 +105,7 @@ node --test 'tests/**/*.test.mjs'
 
 - 不可用 `file://` 開啟，ES modules 會被 CORS 擋住。
 - 測試使用 Node 內建 test runner（Node 22）；`node --test tests/` 在 Node 22 無法執行，請用上述 glob 寫法。
-- 目前 129 個案例（calc 55、store 28、validate 7、quote 19、fetch-quote 20）。`app.js`、`gauge.js` 涉及 DOM，以 headless Chromium 手動 smoke test 驗證。
+- 目前 195 個案例（calc 55、store 38、validate 7、quote 19、fetch-quote 20、margins 39、fetch-margins 17）。`app.js`、`gauge.js` 涉及 DOM，以 headless Chromium 手動 smoke test 驗證。
 - 慣例與架構細節見 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)，變更紀錄見 [docs/CHANGELOG.md](docs/CHANGELOG.md)。
 
 ## 專案結構
@@ -118,11 +118,13 @@ js/calc.js                風控計算（純函式）
 js/validate.js            共用輸入驗證
 js/store.js               狀態預設值、normalize、localStorage
 js/quote.js               讀取 quote.json、行情說明文字
+js/margins.js             讀取 margins.json、官方保證金對帳與套用（純函式）
 js/gauge.js               槓桿半圓儀表（SVG）
 js/app.js                 UI 與事件處理
 scripts/fetch-quote.mjs   抓期交所行情寫成 quote.json
+scripts/fetch-margins.mjs 抓期交所保證金寫成 margins.json
 tests/*.test.mjs          單元測試
-.github/workflows/        deploy.yml（測試、抓行情、部署）、test.yml（PR 測試）
+.github/workflows/        deploy.yml（測試、抓行情與保證金、部署）、test.yml（PR 測試）
 .github/dependabot.yml    每月升級釘 SHA 的 actions
 docs/                     DEVELOPMENT.md、CHANGELOG.md
 ```

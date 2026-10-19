@@ -62,6 +62,13 @@
             <select name="contract" data-contract-select></select>
           </label>
           <p class="hint" id="calc-contract-info"></p>
+          <div class="alert" data-margin-notice hidden>
+            <p data-margin-notice-text></p>
+            <div class="button-row" data-margin-notice-actions>
+              <button type="button" data-margin-action="apply">套用官方值</button>
+              <button type="button" class="ghost" data-margin-action="keep">保留我的設定</button>
+            </div>
+          </div>
 
           <div class="segmented side-toggle" role="group" aria-label="方向">
             <button type="button" data-side="long">做多（看漲）</button>
@@ -269,6 +276,14 @@
 
         <form id="settings-form" class="card inputs" autocomplete="off">
           <h3>保證金設定</h3>
+          <p class="hint" id="margin-source"></p>
+          <div class="alert" data-margin-notice hidden>
+            <p data-margin-notice-text></p>
+            <div class="button-row" data-margin-notice-actions>
+              <button type="button" data-margin-action="apply">套用官方值</button>
+              <button type="button" class="ghost" data-margin-action="keep">保留我的設定</button>
+            </div>
+          </div>
           <div class="table-scroll">
             <table>
               <thead><tr><th>商品</th><th class="num">原始</th><th class="num">維持</th></tr></thead>

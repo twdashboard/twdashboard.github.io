@@ -11,9 +11,11 @@
 | `js/validate.js` | 共用驗證：`isNum`／`isPos`／`isPosInt`／`isDate`／`isValidMargin`／`isValidRatio`、`LIMITS`（`maxQty` 999、`maxLevels` 50） |
 | `js/store.js` | 預設 state、`normalize` 白名單、localStorage 讀寫 |
 | `js/quote.js` | `loadQuote`（視 `quote.json` 為不可信）、`quoteHintText`（純函式） |
+| `js/margins.js` | `sanitizeOfficial`／`loadOfficialMargins`（視 `margins.json` 為不可信）、`reconcileMargins`、`followOfficial`、`sourceAfterEdit`（純函式） |
 | `js/gauge.js` | 手寫 SVG 槓桿半圓儀表 |
 | `js/app.js` | 只負責 DOM 與事件 |
 | `scripts/fetch-quote.mjs` | 抓期交所近月報價寫成 `quote.json` |
+| `scripts/fetch-margins.mjs` | 抓期交所開放資料保證金寫成 `margins.json` |
 
 - 所有風控判斷（`canOpen`、`belowMaintenance`、`liquidated`、`neverLiquidates`、`gap`）寫在 `calc.js` 並補測試，不要寫進 `app.js`。
 - `app.js` 以 `FORMS` 設定驅動 calc／grid 共用的 `syncForm`／`bindForm`／`update`；新增表單欄位改設定，不複製邏輯。
@@ -30,9 +32,12 @@ localStorage key `twdashboard.state.v2`（`version: 2`）。v1 不相容、不�
   calc: { contract, side: 'long'|'short', entry, deposit, qty, shock },
   grid: { contract, side, start, spacing, qtyPerLevel, levels, deposit },
   settings: { margins: {TX|MTX|TMF: {initial, maintenance}}, marginDate,
+              marginsSource: 'official'|'custom', dismissedOfficial: 三檔表|null,
               liquidationRatio, colorScheme: 'redUp'|'greenUp' }
 }
 ```
+
+- `marginsSource` 為 `official` 時自動跟隨 `margins.json`；`custom` 時官方值變動只提示。`dismissedOfficial` 記「保留我的設定」的那組官方值，同一組不再提示。兩欄不升 schema；舊資料缺 `marginsSource` 時，`margins` 等於 `DEFAULT_MARGINS` 視為 `official`，否則 `custom`。
 
 `normalize` 逐欄白名單挑選，非法欄位回預設值；新增欄位須同步補規則與測試。
 
@@ -49,6 +54,7 @@ localStorage key `twdashboard.state.v2`（`version: 2`）。v1 不相容、不�
 
 - CSP：`default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'`。JS 以 CSSOM 設定 `element.style` 不受影響，但不可加 inline `style` 屬性、inline script 或外部資源；確實需要時須同步修改 CSP。
 - `quote.json` 視為不可信，`loadQuote` 只保留通過驗證的欄位。
+- `margins.json` 同樣不可信：`sanitizeOfficial` 要求三檔都合法且各值落在 `DEFAULT_MARGINS` 的 0.3–3 倍，否則整份丟棄，不混用來源。
 - Workflow：workflow 層級只有 `contents: read`，`pages`／`id-token` 只給 deploy job；actions 釘 commit SHA（checkout v4.4.0、setup-node v4.4.0、upload-pages-artifact v3.0.1、deploy-pages v4.0.5），dependabot 每月升版；checkout `persist-credentials: false`；找不到測試檔時 CI 失敗。
 - 不接券商 API、不放金鑰。
 
@@ -70,6 +76,7 @@ localStorage key `twdashboard.state.v2`（`version: 2`）。v1 不相容、不�
 - 近月以月份碼 A–L 加年份末碼自行算到期年月排序，不依賴 API 順序（注意跨十年）。
 - 日夜盤：MIS `MarketType '0'` 為日盤、`'1'` 為夜盤（代號尾碼 `-M`，如 `TMFJ6-M`；月契約正規式 `-[FM]$`）。`sessionOrder(now)` 依臺灣時間決定順序：08:45–14:59 先抓日盤，其餘先抓夜盤；優先盤別失敗（無價格、找不到近月等）改抓另一盤別並輸出 warning。
 - 單一商品失敗仍寫其他商品；全部失敗時沿用線上舊 `quote.json` 並輸出 warning。
+- `margins.json` 與 `quote.json` 同一個 workflow 產生：`deploy.yml` 每次部署（含外部 cron 觸發）執行 `scripts/fetch-margins.mjs _site/margins.json`，不 commit（已 gitignore）。失敗不寫檔，workflow 沿用線上舊檔。
 - 限制：外部觸發後行情延遲約 10–15 分鐘（抓取加部署約 1–2 分鐘）；runner 在海外，可能被期交所擋（尚待驗證）；公開 repo 60 天無 commit 排程會被停用。
 - 限制：GitHub schedule 在低活動 repo 嚴重節流（2026-10-16 實測：新 repo 推上後約 4 小時沒觸發；週五間隔 1–3 小時；週六 07:11 台灣時間後到週一 09:39 一次都沒跑），因此只當備援，必要時手動 `gh workflow run deploy.yml`。
 - 決策：不做瀏覽器即時抓取。MIS 對跨域 preflight 回 403、`text/plain` 回 415；Yahoo 台灣股市內部 API 無 CORS 標頭且有條款與非公開介面問題；即時需 Cloudflare Worker 代理，不採用。
@@ -87,12 +94,19 @@ node --test 'tests/**/*.test.mjs'
 
 ## 保證金更新流程
 
-期交所（https://www.taifex.com.tw/cht/5/indexMarging）調整時：
+以自動抓取為主：`scripts/fetch-margins.mjs` 讀期交所開放資料 API `https://openapi.taifex.com.tw/v1/IndexFuturesAndOptionsMargining`，商品名稱完全相符對應 臺股期貨→TX、小型臺指→MTX、微型臺指期貨→TMF（排除「客製化小型臺指期貨」），欄位須為字串。`margins.json` 格式：`{fetchedAt, source:'TAIFEX OpenAPI', date:'YYYY-MM-DD', margins:{TX|MTX|TMF:{initial,maintenance}}}`。API 的 `Date` 是資料發布日，不是生效日，不推算生效日。
 
-1. 改 `js/contracts.js` 的 `DEFAULT_MARGINS` 與 `DEFAULT_MARGIN_DATE`。
+- `official` 使用者：官方值變動自動套用並提示一次，日期欄位停用、顯示官方資料日。
+- `custom` 使用者：只提示，可「套用官方值」或「保留我的設定」；保留後同一組官方值不再提示。
+- `margins.json` 載入失敗時，`official` 使用者沿用已存值，不退回內建值。
+- 「還原預設值」等同套用官方值。
+
+`DEFAULT_MARGINS` 為備援（新使用者、`margins.json` 不可用時），也是範圍檢查與 CI 比對基準。官方值與內建值不同時 CI 輸出 `::warning::`，此時手動：
+
+1. 改 `js/contracts.js` 的 `DEFAULT_MARGINS` 與 `DEFAULT_MARGIN_DATE`（來源：https://www.taifex.com.tw/cht/5/indexMarging）。
 2. 同步測試與 `README.md` 保證金表，並在 `docs/CHANGELOG.md` 記一筆。
 
-已存在使用者瀏覽器的合法設定不會被覆寫。
+已存在使用者瀏覽器的合法設定不會被覆寫（`official` 依官方值更新除外）。
 
 ## 部署與提交
 

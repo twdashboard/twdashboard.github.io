@@ -10,6 +10,7 @@ import {
   DEFAULT_SHOCK,
 } from './contracts.js';
 import { isPos, isPosInt, isDate, isValidMargin, isValidRatio, LIMITS } from './validate.js';
+import { isMarginTable, cloneMargins, sameMargins } from './margins.js';
 
 const SCHEMA_VERSION = 2;
 const STORAGE_KEY = `twdashboard.state.v${SCHEMA_VERSION}`;
@@ -18,6 +19,10 @@ export function defaultSettings() {
   return {
     margins: structuredClone(DEFAULT_MARGINS),
     marginDate: DEFAULT_MARGIN_DATE,
+    // 'official'：自動跟隨期交所公告值；'custom'：使用者自訂，官方調整時只提示
+    marginsSource: 'official',
+    // 自訂模式下選擇「保留我的設定」的那組官方值，同一組不再提示
+    dismissedOfficial: null,
     liquidationRatio: DEFAULT_LIQUIDATION_RATIO,
     colorScheme: 'redUp',
   };
@@ -79,6 +84,13 @@ export function normalize(raw) {
     const m = raw.settings?.margins?.[code];
     if (isValidMargin(m)) settings.margins[code] = { initial: m.initial, maintenance: m.maintenance };
   }
+  // 舊資料沒有來源欄位：與內建預設值相同視為跟隨官方，否則視為自訂
+  const source = raw.settings?.marginsSource;
+  settings.marginsSource = source === 'official' || source === 'custom'
+    ? source
+    : (sameMargins(settings.margins, DEFAULT_MARGINS) ? 'official' : 'custom');
+  const dismissed = raw.settings?.dismissedOfficial;
+  settings.dismissedOfficial = isMarginTable(dismissed) ? cloneMargins(dismissed) : null;
 
   return { version: SCHEMA_VERSION, calc, grid, settings };
 }

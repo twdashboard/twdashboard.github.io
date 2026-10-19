@@ -139,6 +139,9 @@ main { padding-top: 16px; padding-bottom: 24px; }
 
 .alert { border-radius: var(--radius); padding: 10px 14px; background: color-mix(in srgb, var(--warn) 16%, var(--surface)); color: var(--warn); margin-bottom: 16px; }
 .alert.danger { margin: 0; background: color-mix(in srgb, var(--zone-danger) 14%, var(--surface)); color: var(--zone-danger); font-weight: 600; }
+.alert p { margin: 0; }
+.alert .button-row { margin-top: 8px; }
+[hidden] { display: none !important; }
 
 /* ---------- 輸入 ---------- */
 .inputs { display: grid; gap: 14px; align-content: start; }

@@ -49,6 +49,15 @@ jobs:
         run: |
           echo "::warning::本次行情抓取失敗，沿用線上舊的 quote.json（前端會顯示資料時間）"
           curl -fsS --max-time 15 https://twdashboard.github.io/quote.json -o _site/quote.json || echo "::warning::線上也沒有舊行情檔"
+      - name: 抓取保證金
+        id: margins
+        continue-on-error: true
+        run: node scripts/fetch-margins.mjs _site/margins.json
+      - name: 保證金抓取失敗時沿用線上舊檔
+        if: steps.margins.outcome == 'failure' && hashFiles('_site/margins.json') == ''
+        run: |
+          echo "::warning::本次保證金抓取失敗，沿用線上舊的 margins.json（前端無檔時沿用使用者原設定）"
+          curl -fsS --max-time 15 https://twdashboard.github.io/margins.json -o _site/margins.json || echo "::warning::線上也沒有舊保證金檔"
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: _site
